@@ -4,15 +4,19 @@ set BUILD_DIR=.\build
 set EXECUTABLE=asteroids.exe
 
 set SDL_PATH=.\dependencies\SDL3-3.4.2
+set GLAD_PATH=.\dependencies\glad
 
 echo Compiling to %BUILD_DIR%\%EXECUTABLE%
 mkdir build 2>NUL
 clang src\main.c ^
+    %GLAD_PATH%\src\glad.c ^
     -I%SDL_PATH%\include ^
     -L%SDL_PATH%\lib\x64 ^
+    -I%GLAD_PATH%\include ^
     -lSDL3 ^
+    -lopengl32 ^
+    -Wall -Werror -pedantic ^
     -Xlinker /subsystem:console ^
-    -pedantic ^
     -o %BUILD_DIR%\%EXECUTABLE%
 
 echo Copy SDL3.dll to %BUILD_DIR%
