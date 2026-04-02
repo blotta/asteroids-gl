@@ -2,3 +2,6 @@
 dependencies\SDL3-3.4.2\include
 -I
 dependencies\glad\include
+-I
+dependencies\HandmadeMath
+-std=c11
