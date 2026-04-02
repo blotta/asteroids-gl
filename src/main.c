@@ -1,4 +1,3 @@
-#include "SDL3/SDL_init.h"
 #include <assert.h>
 #include <glad/glad.h>
 #include <stddef.h>
@@ -23,11 +22,15 @@ const char* vertex_shader_source = "#version 330 core\n"
                                    "}\0";
 
 const char* fragment_shader_source = "#version 330 core\n"
+                                     "uniform float time;\n"
                                      "in vec2 vUV;\n"
                                      "in vec4 vColor;\n"
                                      "out vec4 FragColor;\n"
                                      "void main() {\n"
-                                     "   FragColor = vColor;\n" // Orange
+                                     "   vec4 c = vec4(vColor.rgb, vColor.a);\n"
+                                     "   float strength = (sin(time) * 0.5) + 0.5;\n"
+                                     "   c.rgb *= strength;\n"
+                                     "   FragColor = c;\n"
                                      "}\n\0";
 
 typedef enum
@@ -37,6 +40,15 @@ typedef enum
     VA_COLOR,
     COUNT_VAS,
 } VERT_ATTRIB;
+
+typedef enum
+{
+    U_TIME = 0,
+    COUNT_UNIFORMS,
+} UNIFORMS;
+static const char* uniform_names[COUNT_UNIFORMS] = {
+    [U_TIME] = "time"
+};
 
 typedef struct
 {
@@ -49,8 +61,9 @@ typedef struct
 typedef struct
 {
     GLuint shader_program;
-    GLuint VAO;
-    GLuint VBO;
+    GLint uniforms[COUNT_UNIFORMS];
+    GLuint vao;
+    GLuint vbo;
     Vertex vertex_buf[VERTEX_BUF_CAP];
     size_t vertex_buf_sz;
 } Renderer;
@@ -105,12 +118,12 @@ int renderer_init(Renderer* r)
 
     r->vertex_buf_sz = 0;
 
-    glGenBuffers(1, &r->VBO);
-    glBindBuffer(GL_ARRAY_BUFFER, r->VBO);
+    glGenBuffers(1, &r->vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, r->vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(r->vertex_buf), r->vertex_buf, GL_DYNAMIC_DRAW);
 
-    glGenVertexArrays(1, &r->VAO);
-    glBindVertexArray(r->VAO);
+    glGenVertexArrays(1, &r->vao);
+    glBindVertexArray(r->vao);
 
     glVertexAttribPointer(VA_POS, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, pos));
     glEnableVertexAttribArray(VA_POS);
@@ -120,6 +133,8 @@ int renderer_init(Renderer* r)
 
     glVertexAttribPointer(VA_COLOR, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
     glEnableVertexAttribArray(VA_COLOR);
+
+    r->uniforms[U_TIME] = glGetUniformLocation(r->shader_program, uniform_names[U_TIME]);
 
     return 1;
 }
@@ -148,6 +163,11 @@ void renderer_push_rect(Renderer* r, SDL_FRect rect)
 void renderer_sync_buf(Renderer* r)
 {
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(Vertex) * r->vertex_buf_sz, r->vertex_buf);
+}
+
+void renderer_sync_uniforms(Renderer* r, GLfloat time)
+{
+    glUniform1f(r->uniforms[U_TIME], time);
 }
 
 typedef struct
@@ -252,10 +272,12 @@ SDL_AppResult SDL_AppIterate(void* appstate)
     glClear(GL_COLOR_BUFFER_BIT);
 
     glUseProgram(state->renderer.shader_program);
-    glBindVertexArray(state->renderer.VAO);
+    glBindVertexArray(state->renderer.vao);
+
+    renderer_sync_uniforms(&state->renderer, SDL_GetTicks()/1000.f);
 
     // glDrawArrays(GL_TRIANGLES, 0, 4);
-    glDrawArraysInstanced(GL_TRIANGLES, 0, state->renderer.vertex_buf_sz, 1);
+    glDrawArrays(GL_TRIANGLES, 0, state->renderer.vertex_buf_sz);
 
     SDL_GL_SwapWindow(state->window);
 
@@ -271,7 +293,7 @@ void SDL_AppQuit(void* appstate, SDL_AppResult result)
         AppState* state = (AppState*)appstate;
         SDL_GL_DestroyContext(state->gl_context);
         SDL_DestroyWindow(state->window);
-        glDeleteVertexArrays(1, &state->renderer.VAO);
+        glDeleteVertexArrays(1, &state->renderer.vao);
         glDeleteProgram(state->renderer.shader_program);
         SDL_free(state);
     }
