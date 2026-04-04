@@ -7,10 +7,15 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
-const int LOGICAL_WIDTH = 800;
-const int LOGICAL_HEIGHT = 600;
+const int LOGICAL_WIDTH = 1024;
+const int LOGICAL_HEIGHT = 576;
 
 #define COLOR_WHITE vec4(1.f, 1.f, 1.f, 1.f)
+#define COLOR_BLACK vec4(0.f, 0.f, 0.f, 1.f)
+#define COLOR_CYAN vec4(0.f, 1.f, 1.f, 1.f)
+#define COLOR_RED vec4(1.f, 0.f, 0.f, 1.f)
+#define COLOR_GREEN vec4(0.f, 1.f, 0.f, 1.f)
+#define COLOR_BLUE vec4(0.f, 0.f, 1.f, 1.f)
 
 const char* vertex_shader_source = "#version 330 core\n"
                                    "layout (location = 0) in vec3 aPos;\n"
@@ -115,6 +120,12 @@ typedef struct
 
 void renderer_begin(Renderer* r)
 {
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glUseProgram(r->shader_program);
+    glBindVertexArray(r->vao);
+
     r->vertex_buf_sz = 0;
 }
 
@@ -251,10 +262,77 @@ void update_viewport(SDL_Window* window)
 
 typedef struct
 {
+    Vec2 pos;
+    Vec2 vel;
+    float radius;
+    Vec4 color;
+} Asteroid;
+
+#define MAX_ASTEROIDS 100
+typedef struct
+{
+    Asteroid asteroids[MAX_ASTEROIDS];
+    int asteroid_count;
+} Game;
+
+void game_init(Game* game)
+{
+    float max_speed = 100.f;
+    // add 10 asteroids
+    for (int i = 0; i < 10; i++)
+    {
+        game->asteroids[i].pos = vec2(SDL_randf() * LOGICAL_WIDTH, SDL_randf() * LOGICAL_HEIGHT);
+        game->asteroids[i].vel = vec2(SDL_randf() * max_speed - max_speed / 2.f, SDL_randf() * max_speed - max_speed / 2.f);
+        game->asteroids[i].radius = 5.f + SDL_randf() * 30.f;
+        game->asteroids[i].color = COLOR_WHITE;
+        game->asteroid_count++;
+    }
+}
+
+void game_update(Game* game, float dt)
+{
+    for (int i = 0; i < game->asteroid_count; i++)
+    {
+        Asteroid* a = &game->asteroids[i];
+        a->pos.X += a->vel.X * dt;
+        a->pos.Y += a->vel.Y * dt;
+
+        // wrap around screen edges
+        if (a->pos.X + a->radius < 0)
+            a->pos.X = LOGICAL_WIDTH + a->radius;
+        if (a->pos.X - a->radius > LOGICAL_WIDTH)
+            a->pos.X = -a->radius;
+        if (a->pos.Y + a->radius < 0)
+            a->pos.Y = LOGICAL_HEIGHT + a->radius;
+        if (a->pos.Y - a->radius > LOGICAL_HEIGHT)
+            a->pos.Y = -a->radius;
+    }
+}
+
+void game_draw(Game* game, Renderer* renderer)
+{
+    for (int i = 0; i < game->asteroid_count; i++)
+    {
+        Vec2 p = game->asteroids[i].pos;
+        float r = game->asteroids[i].radius;
+        Vec4 color = game->asteroids[i].color;
+        Vertex a = vertex(vec3(p.X - r, p.Y - r, 0), vec2(0, 0), color);
+        Vertex b = vertex(vec3(p.X + r, p.Y - r, 0), vec2(1, 0), color);
+        Vertex c = vertex(vec3(p.X + r, p.Y + r, 0), vec2(1, 1), color);
+        Vertex d = vertex(vec3(p.X - r, p.Y + r, 0), vec2(0, 1), color);
+
+        renderer_push_quad(renderer, a, b, c, d);
+    }
+}
+
+typedef struct
+{
     SDL_Window* window;
     SDL_GLContext gl_context;
     Renderer renderer;
-
+    Game game;
+    Uint64 last_time;
+    int target_fps;
 } AppState;
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
@@ -305,6 +383,10 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
         return SDL_APP_FAILURE;
     }
 
+    game_init(&state->game);
+    state->target_fps = 60;
+    state->last_time = SDL_GetPerformanceCounter();
+
     *appstate = state;
 
     return SDL_APP_CONTINUE;
@@ -333,52 +415,36 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 SDL_AppResult SDL_AppIterate(void* appstate)
 {
     AppState* state = (AppState*)appstate;
+    Uint64 now = SDL_GetPerformanceCounter();
+    Uint64 freq = SDL_GetPerformanceFrequency();
+    float dt = (float)(now - state->last_time) / freq;
+    state->last_time = now;
+
     float time = (float)SDL_GetTicks() / 1000.f;
 
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glUseProgram(state->renderer.shader_program);
-    glBindVertexArray(state->renderer.vao);
+    game_update(&state->game, dt);
 
     // uniforms
     glad_glUniform1f(state->renderer.uniforms[U_TIME], time);
     glUniformMatrix4fv(state->renderer.uniforms[U_VIEW], 1, GL_FALSE, (float*)&state->renderer.view);
     glUniformMatrix4fv(state->renderer.uniforms[U_PROJECTION], 1, GL_FALSE, (float*)&state->renderer.projection);
 
-    // begin drawing
     renderer_begin(&state->renderer);
 
-    // Vec2 pos = vec2(LOGICAL_WIDTH / 2.f, LOGICAL_HEIGHT / 2.f);
-    // float size = (600.f / 2) - 2;
-    // float wh = LOGICAL_WIDTH / 2.f;
-    // float hh = LOGICAL_HEIGHT / 2.f;
-    // renderer_push_triangle(&state->renderer,
-    //                        vertex(vec3(pos.X - size, pos.Y - size, 0.f), vec2(-1.f, -1.f), COLOR_WHITE),
-    //                        vertex(vec3(pos.X + size, pos.Y - size, 0.f), vec2(1.f, -1.f), COLOR_WHITE),
-    //                        vertex(vec3(pos.X, pos.Y + size, 0.f), vec2(0.f, 1.f), COLOR_WHITE));
-
-    // renderer_push_quad(&state->renderer, vertex(vec3(pos.X - wh, pos.Y - hh, 0.f), vec2(-1.f, -1.f), COLOR_WHITE),
-    //                    vertex(vec3(pos.X + wh, pos.Y - hh, 0.f), vec2(1.f, -1.f), COLOR_WHITE),
-    //                    vertex(vec3(pos.X + wh, pos.Y + hh, 0.f), vec2(1.f, 1.f), COLOR_WHITE),
-    //                    vertex(vec3(pos.X - wh, pos.Y + hh, 0.f), vec2(0.f, 1.f), COLOR_WHITE));
-
-    // draw 50 random quads
-    for (int i = 0; i < 50; i++)
-    {
-        Vec2 rand_pos = vec2((float)rand() / RAND_MAX * LOGICAL_WIDTH, (float)rand() / RAND_MAX * LOGICAL_HEIGHT);
-        float rand_wh = (float)rand() / RAND_MAX * 10.f;
-        float rand_hh = (float)rand() / RAND_MAX * 10.f;
-        renderer_push_quad(&state->renderer,
-                           vertex(vec3(rand_pos.X - rand_wh, rand_pos.Y - rand_hh, 0.f), vec2(-1.f, -1.f), COLOR_WHITE),
-                           vertex(vec3(rand_pos.X + rand_wh, rand_pos.Y - rand_hh, 0.f), vec2(1.f, -1.f), COLOR_WHITE),
-                           vertex(vec3(rand_pos.X + rand_wh, rand_pos.Y + rand_hh, 0.f), vec2(1.f, 1.f), COLOR_WHITE),
-                           vertex(vec3(rand_pos.X - rand_wh, rand_pos.Y + rand_hh, 0.f), vec2(0.f, 1.f), COLOR_WHITE));
-    }
+    game_draw(&state->game, &state->renderer);
 
     renderer_end(&state->renderer);
 
     SDL_GL_SwapWindow(state->window);
+
+    Uint64 frame_end = SDL_GetPerformanceCounter();
+    Uint64 frame_elapsed_ns = (frame_end - now) * SDL_NS_PER_SECOND / freq;
+    Uint64 target_ns = SDL_NS_PER_SECOND / state->target_fps;
+
+    if (frame_elapsed_ns < target_ns)
+    {
+        SDL_DelayPrecise(target_ns - frame_elapsed_ns);
+    }
 
     return SDL_APP_CONTINUE; /* carry on with the program! */
 }
