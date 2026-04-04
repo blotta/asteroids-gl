@@ -3,6 +3,7 @@
 typedef HMM_Vec3 Vec3;
 typedef HMM_Vec2 Vec2;
 typedef HMM_Vec4 Vec4;
+typedef HMM_Mat4 Mat4;
 
 static inline Vec2 vec2(float x, float y)
 {
@@ -28,3 +29,5 @@ static inline Vec4 vec4(float x, float y, float z, float w)
     v.W = w;
     return v;
 }
+
+#define Orthographic_RH_NO HMM_Orthographic_RH_NO
