@@ -260,12 +260,16 @@ void update_viewport(SDL_Window* window)
     SDL_Log("resize/pixel size changed: %dx%d", w, h);
 }
 
+#define MIN_ASTEROID_POINTS 6
+#define MAX_ASTEROID_POINTS 20
 typedef struct
 {
     Vec2 pos;
     Vec2 vel;
-    float radius;
+    float base_radius;
     Vec4 color;
+    Vec2 points[MAX_ASTEROID_POINTS];
+    int point_count;
 } Asteroid;
 
 #define MAX_ASTEROIDS 100
@@ -281,10 +285,20 @@ void game_init(Game* game)
     // add 10 asteroids
     for (int i = 0; i < 10; i++)
     {
-        game->asteroids[i].pos = vec2(SDL_randf() * LOGICAL_WIDTH, SDL_randf() * LOGICAL_HEIGHT);
-        game->asteroids[i].vel = vec2(SDL_randf() * max_speed - max_speed / 2.f, SDL_randf() * max_speed - max_speed / 2.f);
-        game->asteroids[i].radius = 5.f + SDL_randf() * 30.f;
-        game->asteroids[i].color = COLOR_WHITE;
+        Asteroid a;
+        a.pos = vec2(SDL_randf() * LOGICAL_WIDTH, SDL_randf() * LOGICAL_HEIGHT);
+        a.vel = vec2(SDL_randf() * max_speed - max_speed / 2.f, SDL_randf() * max_speed - max_speed / 2.f);
+        a.base_radius = 5.f + SDL_randf() * 30.f;
+        a.color = COLOR_WHITE;
+        a.point_count = MIN_ASTEROID_POINTS + SDL_rand(MAX_ASTEROID_POINTS - MIN_ASTEROID_POINTS);
+        for (int p = 0; p < a.point_count; p++)
+        {
+            // place points around pos
+            float offset = a.base_radius + (SDL_randf() * 2.f - 1.f) * a.base_radius / 4.f;
+            float angle = ((float)p / a.point_count) * 2.f * SDL_PI_F;
+            a.points[p] = vec2(offset * cos(angle), offset * sin(angle));
+        }
+        game->asteroids[i] = a;
         game->asteroid_count++;
     }
 }
@@ -298,14 +312,14 @@ void game_update(Game* game, float dt)
         a->pos.Y += a->vel.Y * dt;
 
         // wrap around screen edges
-        if (a->pos.X + a->radius < 0)
-            a->pos.X = LOGICAL_WIDTH + a->radius;
-        if (a->pos.X - a->radius > LOGICAL_WIDTH)
-            a->pos.X = -a->radius;
-        if (a->pos.Y + a->radius < 0)
-            a->pos.Y = LOGICAL_HEIGHT + a->radius;
-        if (a->pos.Y - a->radius > LOGICAL_HEIGHT)
-            a->pos.Y = -a->radius;
+        if (a->pos.X + a->base_radius < 0)
+            a->pos.X = LOGICAL_WIDTH + a->base_radius;
+        if (a->pos.X - a->base_radius > LOGICAL_WIDTH)
+            a->pos.X = -a->base_radius;
+        if (a->pos.Y + a->base_radius < 0)
+            a->pos.Y = LOGICAL_HEIGHT + a->base_radius;
+        if (a->pos.Y - a->base_radius > LOGICAL_HEIGHT)
+            a->pos.Y = -a->base_radius;
     }
 }
 
@@ -313,15 +327,16 @@ void game_draw(Game* game, Renderer* renderer)
 {
     for (int i = 0; i < game->asteroid_count; i++)
     {
-        Vec2 p = game->asteroids[i].pos;
-        float r = game->asteroids[i].radius;
-        Vec4 color = game->asteroids[i].color;
-        Vertex a = vertex(vec3(p.X - r, p.Y - r, 0), vec2(0, 0), color);
-        Vertex b = vertex(vec3(p.X + r, p.Y - r, 0), vec2(1, 0), color);
-        Vertex c = vertex(vec3(p.X + r, p.Y + r, 0), vec2(1, 1), color);
-        Vertex d = vertex(vec3(p.X - r, p.Y + r, 0), vec2(0, 1), color);
-
-        renderer_push_quad(renderer, a, b, c, d);
+        Asteroid* ast = &game->asteroids[i];
+        for (int i = 0; i < ast->point_count; i++)
+        {
+            Vec2 p1 = ast->points[i];
+            Vec2 p2 = ast->points[(i + 1) % ast->point_count];
+            Vertex va = vertex(vec3(ast->pos.X, ast->pos.Y, 0), vec2(.5f, .5f), ast->color);
+            Vertex vb = vertex(vec3(ast->pos.X + p1.X, ast->pos.Y + p1.Y, 0), vec2(1, 0), ast->color);
+            Vertex vc = vertex(vec3(ast->pos.X + p2.X, ast->pos.Y + p2.Y, 0), vec2(1, 1), ast->color);
+            renderer_push_triangle(renderer, va, vb, vc);
+        }
     }
 }
 
