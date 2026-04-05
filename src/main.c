@@ -1,3 +1,6 @@
+#include "SDL3/SDL_events.h"
+#include "SDL3/SDL_oldnames.h"
+#include "SDL3/SDL_stdinc.h"
 #include <assert.h>
 #include <glad/glad.h>
 #include <stddef.h>
@@ -260,6 +263,54 @@ void update_viewport(SDL_Window* window)
     SDL_Log("resize/pixel size changed: %dx%d", w, h);
 }
 
+static Uint8 _key_state[SDL_SCANCODE_COUNT];
+void input_update(SDL_Event* event)
+{
+    // 0 not pressed
+    // 1 pressed
+    // 2 just pressed
+    // 3 just released
+
+    for (Uint16 i = 0; i < SDL_SCANCODE_COUNT; i++)
+    {
+        // just pressed becomes pressed
+        if (_key_state[i] == 2)
+            _key_state[i] = 1;
+
+        // just released becomes not pressed
+        if (_key_state[i] == 3)
+            _key_state[i] = 0;
+    }
+
+    switch (event->type)
+    {
+    case SDL_EVENT_KEY_DOWN: {
+        if (_key_state[event->key.scancode] == 0)
+            _key_state[event->key.scancode] = 2; // just pressed
+    }
+    break;
+    case SDL_EVENT_KEY_UP: {
+        _key_state[event->key.scancode] = 3; // just released
+    }
+    break;
+    }
+}
+
+bool input_key_pressed(SDL_Scancode scancode)
+{
+    return _key_state[scancode] == 1 || _key_state[scancode] == 2;
+}
+
+bool input_key_just_pressed(SDL_Scancode scancode)
+{
+    return _key_state[scancode] == 2;
+}
+
+bool input_key_just_released(SDL_Scancode scancode)
+{
+    return _key_state[scancode] == 3;
+}
+
 #define MIN_ASTEROID_POINTS 6
 #define MAX_ASTEROID_POINTS 20
 typedef struct
@@ -272,15 +323,36 @@ typedef struct
     int point_count;
 } Asteroid;
 
+typedef struct
+{
+    Vec2 pos;
+    float angle;
+    float size;
+    Vec2 vel;
+    Vec2 acc;
+    Vec4 color;
+} Ship;
+
 #define MAX_ASTEROIDS 100
 typedef struct
 {
+    Ship ship;
     Asteroid asteroids[MAX_ASTEROIDS];
     int asteroid_count;
 } Game;
 
+
 void game_init(Game* game)
 {
+    // ship
+    game->ship.pos = vec2(LOGICAL_WIDTH / 2.f, LOGICAL_HEIGHT / 2.f);
+    game->ship.angle = SDL_PI_F / 2.f;
+    game->ship.vel = vec2(0.f, 0.f);
+    game->ship.acc = vec2(0.f, 0.f);
+    game->ship.size = 15.f;
+    game->ship.color = COLOR_WHITE;
+
+    // asteroids
     float max_speed = 100.f;
     // add 10 asteroids
     for (int i = 0; i < 10; i++)
@@ -305,6 +377,47 @@ void game_init(Game* game)
 
 void game_update(Game* game, float dt)
 {
+    bool input_thrust = input_key_pressed(SDL_SCANCODE_W);
+    float input_rot = 0;
+    if (input_key_pressed(SDL_SCANCODE_A))
+    {
+        input_rot = 1.f;
+    }
+    if (input_key_pressed(SDL_SCANCODE_D))
+    {
+        input_rot = -1.f;
+    }
+
+    // ship
+    Ship* ship = &game->ship;
+    ship->angle += input_rot * 3.f * dt;
+
+    if (input_thrust)
+    {
+        float thrust = 1000.f;
+        ship->acc.X += cos(ship->angle) * thrust * dt;
+        ship->acc.Y += sin(ship->angle) * thrust * dt;
+    }
+
+    ship->vel.X += ship->acc.X * dt;
+    ship->vel.Y += ship->acc.Y * dt;
+    ship->vel = HMM_MulV2F(ship->vel, 0.99f); // linear damping
+    ship->acc = HMM_MulV2F(ship->acc, 0.9f);
+    ship->pos.X += ship->vel.X * dt;
+    ship->pos.Y += ship->vel.Y * dt;
+
+    //wrap ship around screen edges
+    if (ship->pos.X + ship->size < 0)
+        ship->pos.X = LOGICAL_WIDTH + ship->size;
+    if (ship->pos.X - ship->size > LOGICAL_WIDTH)
+        ship->pos.X = -ship->size;
+    if (ship->pos.Y + ship->size < 0)
+        ship->pos.Y = LOGICAL_HEIGHT + ship->size;
+    if (ship->pos.Y - ship->size > LOGICAL_HEIGHT)
+        ship->pos.Y = -ship->size;
+
+
+    // asteroids
     for (int i = 0; i < game->asteroid_count; i++)
     {
         Asteroid* a = &game->asteroids[i];
@@ -325,6 +438,17 @@ void game_update(Game* game, float dt)
 
 void game_draw(Game* game, Renderer* renderer)
 {
+    // ship
+    Ship* ship = &game->ship;
+    Vec2 p1 = HMM_RotateV2(vec2(ship->size, 0), ship->angle);
+    Vec2 p2 = HMM_RotateV2(vec2(ship->size, 0), ship->angle + 135 * HMM_DegToRad);
+    Vec2 p3 = HMM_RotateV2(vec2(ship->size, 0), ship->angle - 135 * HMM_DegToRad);
+    renderer_push_triangle(renderer,
+                           vertex(vec3(ship->pos.X + p1.X, ship->pos.Y + p1.Y, 0), vec2(1.f, 0.5f), ship->color),
+                           vertex(vec3(ship->pos.X + p2.X, ship->pos.Y + p2.Y, 0), vec2(0, 1.f), ship->color),
+                           vertex(vec3(ship->pos.X + p3.X, ship->pos.Y + p3.Y, 0), vec2(0, 0), ship->color));
+
+    // asteroids
     for (int i = 0; i < game->asteroid_count; i++)
     {
         Asteroid* ast = &game->asteroids[i];
@@ -410,6 +534,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
 /* This function runs when a new event (mouse input, keypresses, etc) occurs. */
 SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 {
+    input_update(event);
     AppState* state = (AppState*)appstate;
 
     switch (event->type)
