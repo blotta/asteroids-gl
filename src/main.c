@@ -1,6 +1,3 @@
-#include "SDL3/SDL_events.h"
-#include "SDL3/SDL_oldnames.h"
-#include "SDL3/SDL_stdinc.h"
 #include <assert.h>
 #include <glad/glad.h>
 #include <stddef.h>
@@ -12,6 +9,8 @@
 
 const int LOGICAL_WIDTH = 1024;
 const int LOGICAL_HEIGHT = 576;
+#define USE_VSYNC 1
+#define TARGET_FPS 60
 
 #define COLOR_WHITE vec4(1.f, 1.f, 1.f, 1.f)
 #define COLOR_BLACK vec4(0.f, 0.f, 0.f, 1.f)
@@ -42,8 +41,8 @@ const char* fragment_shader_source = "#version 330 core\n"
                                      "out vec4 FragColor;\n"
                                      "void main() {\n"
                                      "   vec4 c = vec4(vColor.rgb, vColor.a);\n"
-                                     "   float strength = (sin(time) * 0.5) + 0.5;\n"
-                                     "   c.rgb *= strength;\n"
+                                     // "   float strength = (sin(time) * 0.5) + 0.5;\n"
+                                     // "   c.rgb *= strength;\n"
                                      "   FragColor = c;\n"
                                      "}\n\0";
 
@@ -264,7 +263,8 @@ void update_viewport(SDL_Window* window)
 }
 
 static Uint8 _key_state[SDL_SCANCODE_COUNT];
-void input_update(SDL_Event* event)
+
+void input_update(void)
 {
     // 0 not pressed
     // 1 pressed
@@ -281,7 +281,10 @@ void input_update(SDL_Event* event)
         if (_key_state[i] == 3)
             _key_state[i] = 0;
     }
+}
 
+void input_handle_event(SDL_Event* event)
+{
     switch (event->type)
     {
     case SDL_EVENT_KEY_DOWN: {
@@ -341,7 +344,6 @@ typedef struct
     int asteroid_count;
 } Game;
 
-
 void game_init(Game* game)
 {
     // ship
@@ -390,7 +392,7 @@ void game_update(Game* game, float dt)
 
     // ship
     Ship* ship = &game->ship;
-    ship->angle += input_rot * 3.f * dt;
+    ship->angle += input_rot * 2.5f * dt;
 
     if (input_thrust)
     {
@@ -406,7 +408,7 @@ void game_update(Game* game, float dt)
     ship->pos.X += ship->vel.X * dt;
     ship->pos.Y += ship->vel.Y * dt;
 
-    //wrap ship around screen edges
+    // wrap ship around screen edges
     if (ship->pos.X + ship->size < 0)
         ship->pos.X = LOGICAL_WIDTH + ship->size;
     if (ship->pos.X - ship->size > LOGICAL_WIDTH)
@@ -415,7 +417,6 @@ void game_update(Game* game, float dt)
         ship->pos.Y = LOGICAL_HEIGHT + ship->size;
     if (ship->pos.Y - ship->size > LOGICAL_HEIGHT)
         ship->pos.Y = -ship->size;
-
 
     // asteroids
     for (int i = 0; i < game->asteroid_count; i++)
@@ -466,12 +467,66 @@ void game_draw(Game* game, Renderer* renderer)
 
 typedef struct
 {
+    double dt;
+    Uint64 now;
+    Uint64 last;
+
+    Uint64 frame_last;
+    Uint64 frame_delay;
+    Uint64 frame_time;
+
+    Uint32 frame_rate;
+    Uint32 frame_count;
+} FrameTiming;
+
+void frame_timing_init(FrameTiming* time, int frame_rate)
+{
+    time->frame_rate = frame_rate;
+    time->frame_delay = SDL_NS_PER_SECOND / frame_rate;
+    time->last = SDL_GetTicksNS();
+    time->frame_last = time->last;
+}
+
+void frame_timing_update(FrameTiming* time)
+{
+    time->now = SDL_GetTicksNS();
+    time->dt = (float)((double)(time->now - time->last) / (double)SDL_NS_PER_SECOND);
+    time->last = time->now;
+
+    time->frame_count++;
+    if (time->now - time->frame_last >= SDL_NS_PER_SECOND)
+    {
+        time->frame_rate = time->frame_count;
+        time->frame_count = 0;
+        time->frame_last = time->now;
+    }
+}
+
+void frame_timing_update_late(FrameTiming* time, bool should_delay)
+{
+    time->frame_time = SDL_GetTicksNS() - time->now;
+
+    if (should_delay && time->frame_delay > time->frame_time)
+    {
+        Uint64 requested_delay = time->frame_delay - time->frame_time;
+        Uint64 before_delay = SDL_GetTicksNS();
+        SDL_DelayPrecise(requested_delay);
+        Uint64 actual_delay = SDL_GetTicksNS() - before_delay;
+        Uint64 diff = actual_delay - requested_delay;
+        Uint64 diff_ms = SDL_NS_TO_MS(diff);
+        if (diff_ms > 0)
+            SDL_Log("Delay diff: %llu ms", diff_ms);
+    }
+}
+
+typedef struct
+{
     SDL_Window* window;
     SDL_GLContext gl_context;
     Renderer renderer;
     Game game;
-    Uint64 last_time;
-    int target_fps;
+    bool use_vsync;
+    FrameTiming time;
 } AppState;
 
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
@@ -515,6 +570,23 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
         return SDL_APP_FAILURE;
     }
 
+    SDL_DisplayID display_id = SDL_GetDisplayForWindow(state->window);
+    const SDL_DisplayMode* display_mode = SDL_GetDesktopDisplayMode(display_id);
+    // Try to use vsync first
+    if (USE_VSYNC && SDL_GL_SetSwapInterval(1))
+    {
+        SDL_Log("Using VSync at %f Hz", display_mode->refresh_rate);
+        state->use_vsync = true;
+    }
+    else
+    {
+        state->use_vsync = false;
+        SDL_Log("Unable to set VSync! Error: %s\n", SDL_GetError());
+        SDL_GL_SetSwapInterval(0);
+        SDL_Log("Falling back to VSync Off at %d Hz", TARGET_FPS);
+    }
+    frame_timing_init(&state->time, TARGET_FPS);
+
     update_viewport(state->window);
 
     if (!renderer_init(&state->renderer))
@@ -523,18 +595,45 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
     }
 
     game_init(&state->game);
-    state->target_fps = 60;
-    state->last_time = SDL_GetPerformanceCounter();
 
     *appstate = state;
 
     return SDL_APP_CONTINUE;
 }
 
+/* This function runs once per frame, and is the heart of the program. */
+SDL_AppResult SDL_AppIterate(void* appstate)
+{
+    AppState* state = (AppState*)appstate;
+
+    frame_timing_update(&state->time);
+
+    input_update();
+    game_update(&state->game, state->time.dt);
+
+    // uniforms
+    glad_glUniform1f(state->renderer.uniforms[U_TIME], (float)SDL_GetTicks() / 1000.f);
+    glUniformMatrix4fv(state->renderer.uniforms[U_VIEW], 1, GL_FALSE, (float*)&state->renderer.view);
+    glUniformMatrix4fv(state->renderer.uniforms[U_PROJECTION], 1, GL_FALSE, (float*)&state->renderer.projection);
+    renderer_begin(&state->renderer);
+
+    game_draw(&state->game, &state->renderer);
+
+    renderer_end(&state->renderer);
+    SDL_GL_SwapWindow(state->window);
+
+    frame_timing_update_late(&state->time, !state->use_vsync);
+
+    SDL_Log("FPS: %d", state->time.frame_rate);
+
+    return SDL_APP_CONTINUE; /* carry on with the program! */
+}
+
 /* This function runs when a new event (mouse input, keypresses, etc) occurs. */
 SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
 {
-    input_update(event);
+    input_handle_event(event);
+
     AppState* state = (AppState*)appstate;
 
     switch (event->type)
@@ -549,44 +648,6 @@ SDL_AppResult SDL_AppEvent(void* appstate, SDL_Event* event)
     }
 
     return SDL_APP_CONTINUE;
-}
-
-/* This function runs once per frame, and is the heart of the program. */
-SDL_AppResult SDL_AppIterate(void* appstate)
-{
-    AppState* state = (AppState*)appstate;
-    Uint64 now = SDL_GetPerformanceCounter();
-    Uint64 freq = SDL_GetPerformanceFrequency();
-    float dt = (float)(now - state->last_time) / freq;
-    state->last_time = now;
-
-    float time = (float)SDL_GetTicks() / 1000.f;
-
-    game_update(&state->game, dt);
-
-    // uniforms
-    glad_glUniform1f(state->renderer.uniforms[U_TIME], time);
-    glUniformMatrix4fv(state->renderer.uniforms[U_VIEW], 1, GL_FALSE, (float*)&state->renderer.view);
-    glUniformMatrix4fv(state->renderer.uniforms[U_PROJECTION], 1, GL_FALSE, (float*)&state->renderer.projection);
-
-    renderer_begin(&state->renderer);
-
-    game_draw(&state->game, &state->renderer);
-
-    renderer_end(&state->renderer);
-
-    SDL_GL_SwapWindow(state->window);
-
-    Uint64 frame_end = SDL_GetPerformanceCounter();
-    Uint64 frame_elapsed_ns = (frame_end - now) * SDL_NS_PER_SECOND / freq;
-    Uint64 target_ns = SDL_NS_PER_SECOND / state->target_fps;
-
-    if (frame_elapsed_ns < target_ns)
-    {
-        SDL_DelayPrecise(target_ns - frame_elapsed_ns);
-    }
-
-    return SDL_APP_CONTINUE; /* carry on with the program! */
 }
 
 /* This function runs once at shutdown. */
