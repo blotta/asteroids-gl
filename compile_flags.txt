@@ -3,3 +3,4 @@ dependencies\SDL3-3.4.2\include
 -I
 dependencies\glad\include
 -std=c11
+-DGAME_LIB_IMPLEMENTATION

@@ -3,8 +3,11 @@
 #define SDL_MAIN_USE_CALLBACKS 1 /* use the callbacks instead of main() */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include "physics.h"
-#include "vmath.h"
+
+#ifndef GAME_LIB_IMPLEMENTATION
+#define GAME_LIB_IMPLEMENTATION
+#endif
+#include "game_lib.h"
 // clang-format on
 
 const int LOGICAL_WIDTH = 1024;
@@ -243,7 +246,7 @@ void renderer_push_convex_polygon(Renderer* r, Vertex* vertices, int vertex_coun
     }
 }
 
-void renderer_draw_rect(Renderer* r, RectF rect, Vec4 color)
+void renderer_draw_rect(Renderer* r, Rect rect, Vec4 color)
 {
     Vertex a = {vec3(rect.x, rect.y, 0), vec2(0.f, 0.f), color};
     Vertex b = {vec3(rect.x + rect.w, rect.y, 0), vec2(1.f, 0.f), color};
@@ -396,8 +399,8 @@ void game_init(Game* game)
     float ship_size = 15.f;
     Vec2 ship_shape_vertices[3];
     ship_shape_vertices[0] = vec2(ship_size, 0);
-    ship_shape_vertices[1] = vec2_rotate(vec2(ship_size, 0), 135 * DegToRad);
-    ship_shape_vertices[2] = vec2_rotate(vec2(ship_size, 0), -135 * DegToRad);
+    ship_shape_vertices[1] = vec2_rotated(vec2(ship_size, 0), 135 * DegToRad);
+    ship_shape_vertices[2] = vec2_rotated(vec2(ship_size, 0), -135 * DegToRad);
     shape_polygon(&ship_shape, ship_shape_vertices, 3);
     ph_body_init(&ship->body, &ship_shape, 1);
     ship->body.position = vec2(LOGICAL_WIDTH / 2.f, LOGICAL_HEIGHT / 2.f);
@@ -440,7 +443,7 @@ void game_init(Game* game)
         a.body.position = vec2(SDL_randf() * LOGICAL_WIDTH, SDL_randf() * LOGICAL_HEIGHT);
         a.base_radius = base_radius;
         a.color = COLOR_WHITE;
-        a.body.velocity = vec2_rotate(vec2(speed, 0.f), direction);
+        a.body.velocity = vec2_rotated(vec2(speed, 0.f), direction);
         a.body.angular_velocity = angular_speed;
 
         game->asteroids[game->asteroid_count++] = a;
@@ -481,7 +484,7 @@ void game_update(Game* game, float dt)
     ship->body.angle += input_rot * 2.5f * dt;
 
     // wrap ship around screen edges
-    RectF bounding_box = ph_bounding_box(&ship->body);
+    Rect bounding_box = ph_bounding_box(&ship->body);
     if (bounding_box.x + bounding_box.w < 0)
         ship->body.position.x = LOGICAL_WIDTH + bounding_box.w / 2.f;
     else if (bounding_box.x > LOGICAL_WIDTH)
@@ -502,7 +505,7 @@ void game_update(Game* game, float dt)
 
         // wrap around screen edges
         // TODO: fix this
-        RectF bounding_box = ph_bounding_box(&a->body);
+        Rect bounding_box = ph_bounding_box(&a->body);
         float pad = a->base_radius * 0.5f;
         if (bounding_box.x + bounding_box.w + pad < 0)
             a->body.position.x = LOGICAL_WIDTH + bounding_box.w / 2.f;
@@ -519,9 +522,9 @@ void game_draw(Game* game, Renderer* renderer)
 {
     // ship
     Ship* ship = &game->ship;
-    Vec2 p1 = vec2_rotate(ship->body.shapes[0].polygon.vertices[0], ship->body.angle);
-    Vec2 p2 = vec2_rotate(ship->body.shapes[0].polygon.vertices[1], ship->body.angle);
-    Vec2 p3 = vec2_rotate(ship->body.shapes[0].polygon.vertices[2], ship->body.angle);
+    Vec2 p1 = vec2_rotated(ship->body.shapes[0].polygon.vertices[0], ship->body.angle);
+    Vec2 p2 = vec2_rotated(ship->body.shapes[0].polygon.vertices[1], ship->body.angle);
+    Vec2 p3 = vec2_rotated(ship->body.shapes[0].polygon.vertices[2], ship->body.angle);
     p1 = vec2_add(p1, ship->body.position);
     p2 = vec2_add(p2, ship->body.position);
     p3 = vec2_add(p3, ship->body.position);
@@ -543,7 +546,7 @@ void game_draw(Game* game, Renderer* renderer)
             Vertex shape_vertices[shape->polygon.vertex_count];
             for (int k = 0; k < shape->polygon.vertex_count; k++)
             {
-                Vec2 pos = vec2_rotate(shape->polygon.vertices[k], ast->body.angle);
+                Vec2 pos = vec2_rotated(shape->polygon.vertices[k], ast->body.angle);
                 pos = vec2_add(pos, ast->body.position);
                 shape_vertices[k] = vertex(vec3(pos.x, pos.y, 0), vec2(0, 0), ast->color);
             }
