@@ -5,7 +5,6 @@ set EXECUTABLE=asteroids.exe
 
 set SDL_PATH=.\dependencies\SDL3-3.4.2
 set GLAD_PATH=.\dependencies\glad
-set HHM_PATH=.\dependencies\HandmadeMath\
 
 echo Compiling to %BUILD_DIR%\%EXECUTABLE%
 mkdir build 2>NUL
@@ -14,11 +13,12 @@ clang src\main.c ^
     -I%SDL_PATH%\include ^
     -L%SDL_PATH%\lib\x64 ^
     -I%GLAD_PATH%\include ^
-    -I%HHM_PATH% ^
     -lSDL3 ^
     -lopengl32 ^
-    -Wall -Werror -Wextra -pedantic ^
+    -Wall -Wextra -pedantic ^
+    -Wno-parentheses ^
     -std=c11 ^
+    -g ^
     -Xlinker /subsystem:console ^
     -o %BUILD_DIR%\%EXECUTABLE%
 

@@ -1,11 +1,11 @@
-#include <assert.h>
+// clang-format off
 #include <glad/glad.h>
-#include <stddef.h>
-#include <stdint.h>
 #define SDL_MAIN_USE_CALLBACKS 1 /* use the callbacks instead of main() */
-#include "vmath.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include "physics.h"
+#include "vmath.h"
+// clang-format on
 
 const int LOGICAL_WIDTH = 1024;
 const int LOGICAL_HEIGHT = 576;
@@ -18,6 +18,7 @@ const int LOGICAL_HEIGHT = 576;
 #define COLOR_RED vec4(1.f, 0.f, 0.f, 1.f)
 #define COLOR_GREEN vec4(0.f, 1.f, 0.f, 1.f)
 #define COLOR_BLUE vec4(0.f, 0.f, 1.f, 1.f)
+#define COLOR_YELLOW vec4(1.f, 1.f, 0.f, 1.f)
 
 const char* vertex_shader_source = "#version 330 core\n"
                                    "layout (location = 0) in vec3 aPos;\n"
@@ -41,8 +42,6 @@ const char* fragment_shader_source = "#version 330 core\n"
                                      "out vec4 FragColor;\n"
                                      "void main() {\n"
                                      "   vec4 c = vec4(vColor.rgb, vColor.a);\n"
-                                     // "   float strength = (sin(time) * 0.5) + 0.5;\n"
-                                     // "   c.rgb *= strength;\n"
                                      "   FragColor = c;\n"
                                      "}\n\0";
 
@@ -133,7 +132,7 @@ void renderer_begin(Renderer* r)
 
 void renderer_push_vertex_values(Renderer* r, Vec3 pos, Vec2 uv, Vec4 color)
 {
-    assert(r->vertex_buf_sz < VERTEX_BUF_CAP);
+    SDL_assert(r->vertex_buf_sz < VERTEX_BUF_CAP);
     r->vertex_buf[r->vertex_buf_sz].pos = pos;
     r->vertex_buf[r->vertex_buf_sz].uv = uv;
     r->vertex_buf[r->vertex_buf_sz].color = color;
@@ -142,7 +141,12 @@ void renderer_push_vertex_values(Renderer* r, Vec3 pos, Vec2 uv, Vec4 color)
 
 void renderer_push_vertex(Renderer* r, Vertex v)
 {
-    assert(r->vertex_buf_sz < VERTEX_BUF_CAP);
+    bool reached_max_vbuf_size = (r->vertex_buf_sz + 1 >= VERTEX_BUF_CAP);
+    if (reached_max_vbuf_size)
+    {
+        SDL_Log("ERROR: reached max vertex buffer size of %zu", r->vertex_buf_sz);
+    }
+    SDL_assert(r->vertex_buf_sz < VERTEX_BUF_CAP);
     r->vertex_buf[r->vertex_buf_sz] = v;
     r->vertex_buf_sz += 1;
 }
@@ -202,11 +206,11 @@ int renderer_init(Renderer* r)
     glVertexAttribPointer(VA_COLOR, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
     glEnableVertexAttribArray(VA_COLOR);
 
-    r->view = HMM_M4D(1.f);
+    r->view = mat4_diagonal(1.f);
     // orthographic projection: origin at bottom-left
-    r->projection = Orthographic_RH_NO(0.f, (float)LOGICAL_WIDTH,  // left, right
-                                       0.f, (float)LOGICAL_HEIGHT, // bottom, top
-                                       -1.f, 1.f);                 // near, far
+    r->projection = mat4_orthographic_rh_no(0.f, (float)LOGICAL_WIDTH,  // left, right
+                                            0.f, (float)LOGICAL_HEIGHT, // bottom, top
+                                            -1.f, 1.f);                 // near, far
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -224,13 +228,55 @@ void renderer_push_triangle(Renderer* r, Vertex a, Vertex b, Vertex c)
 // bl, br, tr, tl
 void renderer_push_quad(Renderer* r, Vertex a, Vertex b, Vertex c, Vertex d)
 {
-    renderer_push_vertex(r, a);
-    renderer_push_vertex(r, b);
-    renderer_push_vertex(r, c);
+    renderer_push_triangle(r, a, b, c);
+    renderer_push_triangle(r, c, d, a);
+}
 
-    renderer_push_vertex(r, c);
-    renderer_push_vertex(r, d);
-    renderer_push_vertex(r, a);
+void renderer_push_convex_polygon(Renderer* r, Vertex* vertices, int vertex_count)
+{
+    SDL_assert(vertex_count > 2);
+    Vertex origin = vertices[0];
+
+    for (int i = 1; i < vertex_count - 1; i++)
+    {
+        renderer_push_triangle(r, origin, vertices[i], vertices[i + 1]);
+    }
+}
+
+void renderer_draw_rect(Renderer* r, RectF rect, Vec4 color)
+{
+    Vertex a = {vec3(rect.x, rect.y, 0), vec2(0.f, 0.f), color};
+    Vertex b = {vec3(rect.x + rect.w, rect.y, 0), vec2(1.f, 0.f), color};
+    Vertex c = {vec3(rect.x + rect.w, rect.y + rect.h, 0), vec2(1.f, 1.f), color};
+    Vertex d = {vec3(rect.x, rect.y + rect.h, 0), vec2(0.f, 1.f), color};
+
+    renderer_push_quad(r, a, b, c, d);
+}
+
+void renderer_draw_line(Renderer* r, Vec2 p1, Vec2 p2, float line_width, Vec4 color)
+{
+    if (line_width <= 0 || (p1.x == p2.x && p1.y == p2.y))
+    {
+        return;
+    }
+
+    Vec2 vec = vec2_sub(p2, p1);
+
+    Vec2 ccw_normal = vec2_normal_ccw_n(vec);
+    Vec2 cw_normal = vec2_mulf(ccw_normal, -1.f);
+    float half_width = line_width * 0.5f;
+
+    Vec2 bl_pos = vec2_add(p1, vec2_mulf(cw_normal, half_width));
+    Vec2 br_pos = vec2_add(p2, vec2_mulf(cw_normal, half_width));
+    Vec2 tr_pos = vec2_add(p2, vec2_mulf(ccw_normal, half_width));
+    Vec2 tl_pos = vec2_add(p1, vec2_mulf(ccw_normal, half_width));
+
+    Vertex bl = {vec3_v2(bl_pos), VEC2_UV_BL, color};
+    Vertex br = {vec3_v2(br_pos), VEC2_UV_BR, color};
+    Vertex tr = {vec3_v2(tr_pos), VEC2_UV_TR, color};
+    Vertex tl = {vec3_v2(tl_pos), VEC2_UV_TL, color};
+
+    renderer_push_quad(r, bl, br, tr, tl);
 }
 
 void update_viewport(SDL_Window* window)
@@ -316,22 +362,20 @@ bool input_key_just_released(SDL_Scancode scancode)
 
 #define MIN_ASTEROID_POINTS 6
 #define MAX_ASTEROID_POINTS 20
+#define MIN_ASTEROID_RADIUS 40.f
+#define MAX_ASTEROID_RADIUS 80.f
+#define MAX_ASTEROID_SPEED 100.f
+
 typedef struct
 {
-    Vec2 pos;
-    Vec2 vel;
+    PHBody body;
     float base_radius;
     Vec4 color;
-    Vec2 points[MAX_ASTEROID_POINTS];
-    int point_count;
 } Asteroid;
 
 typedef struct
 {
-    Vec2 pos;
-    float angle;
-    float size;
-    Vec2 vel;
+    PHBody body;
     Vec2 acc;
     Vec4 color;
 } Ship;
@@ -347,33 +391,59 @@ typedef struct
 void game_init(Game* game)
 {
     // ship
-    game->ship.pos = vec2(LOGICAL_WIDTH / 2.f, LOGICAL_HEIGHT / 2.f);
-    game->ship.angle = SDL_PI_F / 2.f;
-    game->ship.vel = vec2(0.f, 0.f);
-    game->ship.acc = vec2(0.f, 0.f);
-    game->ship.size = 15.f;
-    game->ship.color = COLOR_WHITE;
+    Ship* ship = &game->ship;
+    Shape ship_shape;
+    float ship_size = 15.f;
+    Vec2 ship_shape_vertices[3];
+    ship_shape_vertices[0] = vec2(ship_size, 0);
+    ship_shape_vertices[1] = vec2_rotate(vec2(ship_size, 0), 135 * DegToRad);
+    ship_shape_vertices[2] = vec2_rotate(vec2(ship_size, 0), -135 * DegToRad);
+    shape_polygon(&ship_shape, ship_shape_vertices, 3);
+    ph_body_init(&ship->body, &ship_shape, 1);
+    ship->body.position = vec2(LOGICAL_WIDTH / 2.f, LOGICAL_HEIGHT / 2.f);
+    ship->body.angle = SDL_PI_F / 2.f;
+    ship->color = COLOR_WHITE;
+    ship->acc = vec2(0.f, 0.f);
 
-    // asteroids
-    float max_speed = 100.f;
-    // add 10 asteroids
-    for (int i = 0; i < 10; i++)
+    // manual asteroid
     {
         Asteroid a;
-        a.pos = vec2(SDL_randf() * LOGICAL_WIDTH, SDL_randf() * LOGICAL_HEIGHT);
-        a.vel = vec2(SDL_randf() * max_speed - max_speed / 2.f, SDL_randf() * max_speed - max_speed / 2.f);
-        a.base_radius = 5.f + SDL_randf() * 30.f;
+        Shape a_shape;
+        float base_radius = MIN_ASTEROID_RADIUS;
+        Vec2 a_shape_vertices[4];
+        a_shape_vertices[0] = vec2(base_radius, -base_radius);
+        a_shape_vertices[1] = vec2(base_radius, base_radius);
+        a_shape_vertices[2] = vec2(-base_radius, base_radius);
+        a_shape_vertices[3] = vec2(-base_radius - 20.f, -base_radius);
+        shape_polygon(&a_shape, a_shape_vertices, 4);
+        ph_body_init(&a.body, &a_shape, 1);
+        a.body.position = vec2(LOGICAL_WIDTH * 0.25f, LOGICAL_HEIGHT * 0.5f);
+        a.base_radius = base_radius;
+        a.color = COLOR_CYAN;
+
+        game->asteroids[game->asteroid_count++] = a;
+    }
+
+    // randomly generated asteroids
+    for (int i = 0; i < 10; i++)
+    {
+        float base_radius = MIN_ASTEROID_RADIUS + SDL_randf() * (MAX_ASTEROID_RADIUS - MIN_ASTEROID_RADIUS);
+        float speed = 20.f + SDL_randf() * (MAX_ASTEROID_SPEED - 20.f);
+        float direction = SDL_randf() * 2.f * PI_F;
+        float angular_speed = 0.1f * 2.f * PI_F * SDL_randf();
+        int vertex_count = MIN_ASTEROID_POINTS + SDL_rand(MAX_ASTEROID_POINTS - MIN_ASTEROID_POINTS);
+
+        Asteroid a;
+        Shape a_shape;
+        shape_polygon_generate_convex(&a_shape, vertex_count, base_radius);
+        ph_body_init(&a.body, &a_shape, 1);
+        a.body.position = vec2(SDL_randf() * LOGICAL_WIDTH, SDL_randf() * LOGICAL_HEIGHT);
+        a.base_radius = base_radius;
         a.color = COLOR_WHITE;
-        a.point_count = MIN_ASTEROID_POINTS + SDL_rand(MAX_ASTEROID_POINTS - MIN_ASTEROID_POINTS);
-        for (int p = 0; p < a.point_count; p++)
-        {
-            // place points around pos
-            float offset = a.base_radius + (SDL_randf() * 2.f - 1.f) * a.base_radius / 4.f;
-            float angle = ((float)p / a.point_count) * 2.f * SDL_PI_F;
-            a.points[p] = vec2(offset * cos(angle), offset * sin(angle));
-        }
-        game->asteroids[i] = a;
-        game->asteroid_count++;
+        a.body.velocity = vec2_rotate(vec2(speed, 0.f), direction);
+        a.body.angular_velocity = angular_speed;
+
+        game->asteroids[game->asteroid_count++] = a;
     }
 }
 
@@ -392,48 +462,56 @@ void game_update(Game* game, float dt)
 
     // ship
     Ship* ship = &game->ship;
-    ship->angle += input_rot * 2.5f * dt;
 
     if (input_thrust)
     {
         float thrust = 1000.f;
-        ship->acc.X += cos(ship->angle) * thrust * dt;
-        ship->acc.Y += sin(ship->angle) * thrust * dt;
+        ship->acc.x += SDL_cosf(ship->body.angle) * thrust * dt;
+        ship->acc.y += SDL_sinf(ship->body.angle) * thrust * dt;
     }
 
-    ship->vel.X += ship->acc.X * dt;
-    ship->vel.Y += ship->acc.Y * dt;
-    ship->vel = HMM_MulV2F(ship->vel, 0.99f); // linear damping
-    ship->acc = HMM_MulV2F(ship->acc, 0.9f);
-    ship->pos.X += ship->vel.X * dt;
-    ship->pos.Y += ship->vel.Y * dt;
+    ship->body.velocity.x += ship->acc.x * dt;
+    ship->body.velocity.y += ship->acc.y * dt;
+    ship->body.velocity = vec2_mulf(ship->body.velocity, 0.99f); // linear damping
+    ship->acc = vec2_mulf(ship->acc, 0.9f);
+    ship->body.position.x += ship->body.velocity.x * dt;
+    ship->body.position.y += ship->body.velocity.y * dt;
+    ship->color = COLOR_WHITE;
+
+    ship->body.angle += input_rot * 2.5f * dt;
 
     // wrap ship around screen edges
-    if (ship->pos.X + ship->size < 0)
-        ship->pos.X = LOGICAL_WIDTH + ship->size;
-    if (ship->pos.X - ship->size > LOGICAL_WIDTH)
-        ship->pos.X = -ship->size;
-    if (ship->pos.Y + ship->size < 0)
-        ship->pos.Y = LOGICAL_HEIGHT + ship->size;
-    if (ship->pos.Y - ship->size > LOGICAL_HEIGHT)
-        ship->pos.Y = -ship->size;
+    RectF bounding_box = ph_bounding_box(&ship->body);
+    if (bounding_box.x + bounding_box.w < 0)
+        ship->body.position.x = LOGICAL_WIDTH + bounding_box.w / 2.f;
+    else if (bounding_box.x > LOGICAL_WIDTH)
+        ship->body.position.x = -bounding_box.w / 2.f;
+    if (bounding_box.y + bounding_box.h < 0)
+        ship->body.position.y = LOGICAL_HEIGHT + bounding_box.h / 2.f;
+    else if (bounding_box.y > LOGICAL_HEIGHT)
+        ship->body.position.y = -bounding_box.h / 2.f;
 
     // asteroids
     for (int i = 0; i < game->asteroid_count; i++)
     {
         Asteroid* a = &game->asteroids[i];
-        a->pos.X += a->vel.X * dt;
-        a->pos.Y += a->vel.Y * dt;
+        a->body.position.x += a->body.velocity.x * dt;
+        a->body.position.y += a->body.velocity.y * dt;
+
+        a->body.angle += a->body.angular_velocity * dt;
 
         // wrap around screen edges
-        if (a->pos.X + a->base_radius < 0)
-            a->pos.X = LOGICAL_WIDTH + a->base_radius;
-        if (a->pos.X - a->base_radius > LOGICAL_WIDTH)
-            a->pos.X = -a->base_radius;
-        if (a->pos.Y + a->base_radius < 0)
-            a->pos.Y = LOGICAL_HEIGHT + a->base_radius;
-        if (a->pos.Y - a->base_radius > LOGICAL_HEIGHT)
-            a->pos.Y = -a->base_radius;
+        // TODO: fix this
+        RectF bounding_box = ph_bounding_box(&a->body);
+        float pad = a->base_radius * 0.5f;
+        if (bounding_box.x + bounding_box.w + pad < 0)
+            a->body.position.x = LOGICAL_WIDTH + bounding_box.w / 2.f;
+        else if (bounding_box.x - pad > LOGICAL_WIDTH)
+            a->body.position.x = -bounding_box.w / 2.f;
+        if (bounding_box.y + bounding_box.h + pad < 0)
+            a->body.position.y = LOGICAL_HEIGHT + bounding_box.h / 2.f;
+        else if (bounding_box.y - pad > LOGICAL_HEIGHT)
+            a->body.position.y = -bounding_box.h / 2.f;
     }
 }
 
@@ -441,27 +519,41 @@ void game_draw(Game* game, Renderer* renderer)
 {
     // ship
     Ship* ship = &game->ship;
-    Vec2 p1 = HMM_RotateV2(vec2(ship->size, 0), ship->angle);
-    Vec2 p2 = HMM_RotateV2(vec2(ship->size, 0), ship->angle + 135 * HMM_DegToRad);
-    Vec2 p3 = HMM_RotateV2(vec2(ship->size, 0), ship->angle - 135 * HMM_DegToRad);
-    renderer_push_triangle(renderer,
-                           vertex(vec3(ship->pos.X + p1.X, ship->pos.Y + p1.Y, 0), vec2(1.f, 0.5f), ship->color),
-                           vertex(vec3(ship->pos.X + p2.X, ship->pos.Y + p2.Y, 0), vec2(0, 1.f), ship->color),
-                           vertex(vec3(ship->pos.X + p3.X, ship->pos.Y + p3.Y, 0), vec2(0, 0), ship->color));
+    Vec2 p1 = vec2_rotate(ship->body.shapes[0].polygon.vertices[0], ship->body.angle);
+    Vec2 p2 = vec2_rotate(ship->body.shapes[0].polygon.vertices[1], ship->body.angle);
+    Vec2 p3 = vec2_rotate(ship->body.shapes[0].polygon.vertices[2], ship->body.angle);
+    p1 = vec2_add(p1, ship->body.position);
+    p2 = vec2_add(p2, ship->body.position);
+    p3 = vec2_add(p3, ship->body.position);
+    renderer_push_triangle(renderer, vertex(vec3(p1.x, p1.y, 0.f), vec2(1.f, 0.5f), ship->color),
+                           vertex(vec3(p2.x, p2.y, 0.f), vec2(0.f, 1.0f), ship->color),
+                           vertex(vec3(p3.x, p3.y, 0.f), vec2(0.f, 0.0f), ship->color));
 
     // asteroids
     for (int i = 0; i < game->asteroid_count; i++)
     {
         Asteroid* ast = &game->asteroids[i];
-        for (int i = 0; i < ast->point_count; i++)
+
+        // RectF bbox = ph_bounding_box(&ast->body);
+        // renderer_draw_rect(renderer, bbox, vec4(1.f, 0, 0, 0.3f));
+
+        for (int j = 0; j < ast->body.shape_count; j++)
         {
-            Vec2 p1 = ast->points[i];
-            Vec2 p2 = ast->points[(i + 1) % ast->point_count];
-            Vertex va = vertex(vec3(ast->pos.X, ast->pos.Y, 0), vec2(.5f, .5f), ast->color);
-            Vertex vb = vertex(vec3(ast->pos.X + p1.X, ast->pos.Y + p1.Y, 0), vec2(1, 0), ast->color);
-            Vertex vc = vertex(vec3(ast->pos.X + p2.X, ast->pos.Y + p2.Y, 0), vec2(1, 1), ast->color);
-            renderer_push_triangle(renderer, va, vb, vc);
+            Shape* shape = &ast->body.shapes[j];
+            Vertex shape_vertices[shape->polygon.vertex_count];
+            for (int k = 0; k < shape->polygon.vertex_count; k++)
+            {
+                Vec2 pos = vec2_rotate(shape->polygon.vertices[k], ast->body.angle);
+                pos = vec2_add(pos, ast->body.position);
+                shape_vertices[k] = vertex(vec3(pos.x, pos.y, 0), vec2(0, 0), ast->color);
+            }
+            renderer_push_convex_polygon(renderer, shape_vertices, shape->polygon.vertex_count);
         }
+
+        Vec2 vel_vec = vec2_mulf(vec2_normalized(ast->body.velocity), 20.f);
+        Vec2 p2 = vec2_add(ast->body.position, vel_vec);
+
+        renderer_draw_line(renderer, ast->body.position, p2, 2.f, COLOR_CYAN);
     }
 }
 
@@ -624,7 +716,7 @@ SDL_AppResult SDL_AppIterate(void* appstate)
 
     frame_timing_update_late(&state->time, !state->use_vsync);
 
-    SDL_Log("FPS: %d", state->time.frame_rate);
+    // SDL_Log("FPS: %d", state->time.frame_rate);
 
     return SDL_APP_CONTINUE; /* carry on with the program! */
 }
