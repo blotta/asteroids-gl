@@ -558,6 +558,26 @@ void game_draw(Game* game, Renderer* renderer)
 
         renderer_draw_line(renderer, ast->body.position, p2, 2.f, COLOR_CYAN);
     }
+
+    // testing vec2 project
+    Vec2 pos = vec2(LOGICAL_WIDTH * 0.5f, LOGICAL_HEIGHT * 0.5f);
+    static float v_angle = 0.f;
+    static float onto_angle = 0.f;
+    if (input_key_pressed(SDL_SCANCODE_LEFT))
+        v_angle += 1.f/60.f;
+    if (input_key_pressed(SDL_SCANCODE_RIGHT))
+        v_angle -= 1.f/60.f;
+    if (input_key_pressed(SDL_SCANCODE_UP))
+        onto_angle += 1.f/60.f;
+    if (input_key_pressed(SDL_SCANCODE_DOWN))
+        onto_angle -= 1.f/60.f;
+    Vec2 v = vec2_rotated(vec2(150.f, 0.f), v_angle);
+    Vec2 onto = vec2_rotated(vec2(100.f, -40.f), onto_angle);
+    Vec2 projected = vec2_project(v, onto);
+    renderer_draw_line(renderer, pos, vec2_add(pos, onto), 4.f, COLOR_WHITE);
+    renderer_draw_line(renderer, pos, vec2_add(pos, v), 2.f, COLOR_RED);
+    renderer_draw_line(renderer, pos, vec2_add(pos, projected), 2.f, COLOR_BLUE);
+
 }
 
 typedef struct

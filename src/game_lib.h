@@ -112,6 +112,7 @@ LIB_DEF Vec2 vec2_normal_cw(Vec2 v);
 // normalized cw normal
 LIB_DEF Vec2 vec2_normal_cw_n(Vec2 v);
 LIB_DEF Vec2 vec2_rotated(Vec2 v, float angle);
+LIB_DEF Vec2 vec2_project(Vec2 v, Vec2 onto);
 
 LIB_DEF Vec3 vec3(float x, float y, float z);
 LIB_DEF Vec3 vec3_v2(Vec2 a);
@@ -237,6 +238,7 @@ float vec2_cross(Vec2 a, Vec2 b)
 Vec2 vec2_normalized(Vec2 a)
 {
     float len = vec2_length(a);
+    ASSERT(len > 0.f);
     return vec2_mulf(a, 1.f / len);
 }
 
@@ -266,6 +268,14 @@ Vec2 vec2_rotated(Vec2 v, float angle)
     float cosA = cos_f(angle);
 
     return vec2(v.x * cosA - v.y * sinA, v.x * sinA + v.y * cosA);
+}
+
+Vec2 vec2_project(Vec2 v, Vec2 onto)
+{
+    onto = vec2_normalized(onto);
+    float scalar_projection = vec2_dot(v, onto);
+    onto = vec2_mulf(onto, scalar_projection);
+    return onto;
 }
 
 Vec3 vec3(float x, float y, float z)
