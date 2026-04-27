@@ -1,4 +1,5 @@
 // clang-format off
+#include "SDL3/SDL_timer.h"
 #include <glad/glad.h>
 #define SDL_MAIN_USE_CALLBACKS 1 /* use the callbacks instead of main() */
 #include <SDL3/SDL.h>
@@ -27,7 +28,7 @@ const char* vertex_shader_source = "#version 330 core\n"
                                    "layout (location = 0) in vec3 aPos;\n"
                                    "layout (location = 1) in vec2 aUV;\n"
                                    "layout (location = 2) in vec4 aColor;\n"
-                                   // "uniform mat4 uModel;\n"
+                                   "uniform mat4 uTransform;\n"
                                    "uniform mat4 uView;\n"
                                    "uniform mat4 uProjection;\n"
                                    "out vec2 vUV;\n"
@@ -35,7 +36,7 @@ const char* vertex_shader_source = "#version 330 core\n"
                                    "void main() {\n"
                                    "   vUV = aUV;\n"
                                    "   vColor = aColor;\n"
-                                   "   gl_Position = uProjection * uView * vec4(aPos, 1.0);\n"
+                                   "   gl_Position = uProjection * uView * uTransform * vec4(aPos, 1.0);\n"
                                    "}\0";
 
 const char* fragment_shader_source = "#version 330 core\n"
@@ -59,7 +60,7 @@ typedef enum
 typedef enum
 {
     U_TIME = 0,
-    // U_MODEL,
+    U_TRANSFORM,
     U_VIEW,
     U_PROJECTION,
     U_COLOR,
@@ -69,7 +70,7 @@ typedef enum
 // clang-format off
 static const char* uniform_names[COUNT_UNIFORMS] = {
     [U_TIME] = "time",
-    // [U_MODEL] = "uModel",
+    [U_TRANSFORM] = "uTransform",
     [U_VIEW] = "uView",
     [U_PROJECTION] = "uProjection",
     [U_COLOR] = "uColor",
@@ -118,12 +119,14 @@ typedef struct
     Vertex vertex_buf[VERTEX_BUF_CAP];
     size_t vertex_buf_sz;
 
+    Mat4 transform;
     Mat4 view;
     Mat4 projection;
 } Renderer;
 
 void renderer_begin(Renderer* r)
 {
+    glUniformMatrix4fv(r->uniforms[U_TRANSFORM], 1, GL_FALSE, (float*)&r->transform);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -209,7 +212,8 @@ int renderer_init(Renderer* r)
     glVertexAttribPointer(VA_COLOR, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
     glEnableVertexAttribArray(VA_COLOR);
 
-    r->view = mat4_diagonal(1.f);
+    r->transform = mat4(1.f);
+    r->view = mat4(1.f);
     // orthographic projection: origin at bottom-left
     r->projection = mat4_orthographic_rh_no(0.f, (float)LOGICAL_WIDTH,  // left, right
                                             0.f, (float)LOGICAL_HEIGHT, // bottom, top
@@ -246,40 +250,102 @@ void renderer_push_convex_polygon(Renderer* r, Vertex* vertices, int vertex_coun
     }
 }
 
-void renderer_draw_rect(Renderer* r, Rect rect, Vec4 color)
+void renderer_transform_reset(Renderer* r)
 {
-    Vertex a = {vec3(rect.x, rect.y, 0), vec2(0.f, 0.f), color};
-    Vertex b = {vec3(rect.x + rect.w, rect.y, 0), vec2(1.f, 0.f), color};
-    Vertex c = {vec3(rect.x + rect.w, rect.y + rect.h, 0), vec2(1.f, 1.f), color};
-    Vertex d = {vec3(rect.x, rect.y + rect.h, 0), vec2(0.f, 1.f), color};
-
-    renderer_push_quad(r, a, b, c, d);
+    r->transform = mat4(1.f);
 }
 
-void renderer_draw_line(Renderer* r, Vec2 p1, Vec2 p2, float line_width, Vec4 color)
+void renderer_tranform_push(Renderer* r, Mat4 transform)
 {
-    if (line_width <= 0 || (p1.x == p2.x && p1.y == p2.y))
+    r->transform = mat4_mul_m4(r->transform, transform);
+}
+
+void renderer_transform_translate(Renderer* r, Vec2 translation)
+{
+    renderer_tranform_push(r, mat4_translation(vec3_v2(translation)));
+}
+
+void renderer_transform_rotate(Renderer* r, float angle)
+{
+    renderer_tranform_push(r, mat4_rotation(angle, vec3(0.f, 0.f, 1.f)));
+}
+
+void renderer_draw_point(Renderer* r, Vec2 point, Vec4 color)
+{
+    Mat4 local = mat4_translation(vec3(point.x, point.y, 0.f)); // position
+
+    Mat4 world = mat4_mul_m4(r->transform, local);
+
+    Vec4 p1 = mat4_mul_v4(world, vec4(-.5f, -.5f, 0.f, 1.f));
+    Vec4 p2 = mat4_mul_v4(world, vec4(.5f, -.5f, 0.f, 1.f));
+    Vec4 p3 = mat4_mul_v4(world, vec4(.5f, .5f, 0.f, 1.f));
+    Vec4 p4 = mat4_mul_v4(world, vec4(-.5f, .5f, 0.f, 1.f));
+
+    Vertex bl = {vec3(p1.x, p1.y, 0), vec2(0.f, 0.f), color};
+    Vertex br = {vec3(p2.x, p2.y, 0), vec2(1.f, 0.f), color};
+    Vertex tr = {vec3(p3.x, p3.y, 0), vec2(1.f, 1.f), color};
+    Vertex tl = {vec3(p4.x, p4.y, 0), vec2(0.f, 1.f), color};
+
+    renderer_push_quad(r, bl, br, tr, tl);
+}
+
+void renderer_draw_rect_ext(Renderer* r, Rect rect, Vec2 anchor, float angle, Vec4 color)
+{
+    float ax = anchor.x * rect.w;
+    float ay = anchor.y * rect.h;
+
+    Mat4 local = mat4_translation(vec3(-ax, -ay, 0.f));                      // anchor
+    local = mat4_mul_m4(mat4_rotation(angle, vec3(0.f, 0.f, 1.f)), local);   // rotation
+    local = mat4_mul_m4(mat4_translation(vec3(rect.x, rect.y, 0.f)), local); // position
+
+    Mat4 world = mat4_mul_m4(r->transform, local);
+
+    Vec4 p1 = mat4_mul_v4(world, vec4(0.f, 0.f, 0.f, 1.f));
+    Vec4 p2 = mat4_mul_v4(world, vec4(rect.w, 0.f, 0.f, 1.f));
+    Vec4 p3 = mat4_mul_v4(world, vec4(rect.w, rect.h, 0.f, 1.f));
+    Vec4 p4 = mat4_mul_v4(world, vec4(0.f, rect.h, 0.f, 1.f));
+
+    Vertex bl = vertex(vec3(p1.x, p1.y, 0.f), vec2(0.f, 0.f), color);
+    Vertex br = vertex(vec3(p2.x, p2.y, 0.f), vec2(1.f, 0.f), color);
+    Vertex tr = vertex(vec3(p3.x, p3.y, 0.f), vec2(1.f, 1.f), color);
+    Vertex tl = vertex(vec3(p4.x, p4.y, 0.f), vec2(0.f, 1.f), color);
+
+    renderer_push_quad(r, bl, br, tr, tl);
+}
+
+void renderer_draw_rect(Renderer* r, Rect rect, Vec4 color)
+{
+    renderer_draw_rect_ext(r, rect, vec2(0.f, 0.f), 0.f, color);
+}
+
+void renderer_draw_line(Renderer* r, Vec2 p1, Vec2 p2, float line_height, Vec4 color)
+{
+    if (line_height <= 0 || (p1.x == p2.x && p1.y == p2.y))
     {
         return;
     }
+    float hh = line_height * 0.5f;
 
     Vec2 vec = vec2_sub(p2, p1);
+    float angle = vec2_angle(vec);
 
-    Vec2 ccw_normal = vec2_normal_ccw_n(vec);
-    Vec2 cw_normal = vec2_mulf(ccw_normal, -1.f);
-    float half_width = line_width * 0.5f;
+    Rect rc = rect(p1.x, p1.y - hh, vec2_length(vec), line_height);
+    renderer_draw_rect_ext(r, rc, vec2(0.f, 0.f), angle, color);
+}
 
-    Vec2 bl_pos = vec2_add(p1, vec2_mulf(cw_normal, half_width));
-    Vec2 br_pos = vec2_add(p2, vec2_mulf(cw_normal, half_width));
-    Vec2 tr_pos = vec2_add(p2, vec2_mulf(ccw_normal, half_width));
-    Vec2 tl_pos = vec2_add(p1, vec2_mulf(ccw_normal, half_width));
+void renderer_draw_polygon(Renderer* r, Vec2* vertices, size_t vertex_count, Vec4 color)
+{
+    ASSERT(vertex_count >= 3);
 
-    Vertex bl = {vec3_v2(bl_pos), VEC2_UV_BL, color};
-    Vertex br = {vec3_v2(br_pos), VEC2_UV_BR, color};
-    Vertex tr = {vec3_v2(tr_pos), VEC2_UV_TR, color};
-    Vertex tl = {vec3_v2(tl_pos), VEC2_UV_TL, color};
+    Vertex points[vertex_count];
+    for (size_t i = 0; i < vertex_count; i++)
+    {
+        Vec4 p = vec4(vertices[i].x, vertices[i].y, 0.f, 1.f);
+        p = mat4_mul_v4(r->transform, p);
+        points[i] = (Vertex){vec3(p.x, p.y, 0.f), vec2(0.f, 0.f), color};
+    }
 
-    renderer_push_quad(r, bl, br, tr, tl);
+    renderer_push_convex_polygon(r, points, vertex_count);
 }
 
 void update_viewport(SDL_Window* window)
@@ -484,15 +550,17 @@ void game_update(Game* game, float dt)
     ship->body.angle += input_rot * 2.5f * dt;
 
     // wrap ship around screen edges
-    Rect bounding_box = ph_bounding_box(&ship->body);
-    if (bounding_box.x + bounding_box.w < 0)
-        ship->body.position.x = LOGICAL_WIDTH + bounding_box.w / 2.f;
-    else if (bounding_box.x > LOGICAL_WIDTH)
-        ship->body.position.x = -bounding_box.w / 2.f;
-    if (bounding_box.y + bounding_box.h < 0)
-        ship->body.position.y = LOGICAL_HEIGHT + bounding_box.h / 2.f;
-    else if (bounding_box.y > LOGICAL_HEIGHT)
-        ship->body.position.y = -bounding_box.h / 2.f;
+    AABB bbox = ph_bounding_box(&ship->body);
+    float bbox_w = bbox.right - bbox.left;
+    float bbox_h = bbox.top - bbox.bottom;
+    if (bbox.right < 0)
+        ship->body.position.x += LOGICAL_WIDTH + bbox_w;
+    else if (bbox.left > LOGICAL_WIDTH)
+        ship->body.position.x -= LOGICAL_WIDTH + bbox_w;
+    if (bbox.top < 0)
+        ship->body.position.y += LOGICAL_HEIGHT + bbox_h;
+    else if (bbox.bottom > LOGICAL_HEIGHT)
+        ship->body.position.y -= LOGICAL_HEIGHT + bbox_h;
 
     // asteroids
     for (int i = 0; i < game->asteroid_count; i++)
@@ -504,80 +572,97 @@ void game_update(Game* game, float dt)
         a->body.angle += a->body.angular_velocity * dt;
 
         // wrap around screen edges
-        // TODO: fix this
-        Rect bounding_box = ph_bounding_box(&a->body);
-        float pad = a->base_radius * 0.5f;
-        if (bounding_box.x + bounding_box.w + pad < 0)
-            a->body.position.x = LOGICAL_WIDTH + bounding_box.w / 2.f;
-        else if (bounding_box.x - pad > LOGICAL_WIDTH)
-            a->body.position.x = -bounding_box.w / 2.f;
-        if (bounding_box.y + bounding_box.h + pad < 0)
-            a->body.position.y = LOGICAL_HEIGHT + bounding_box.h / 2.f;
-        else if (bounding_box.y - pad > LOGICAL_HEIGHT)
-            a->body.position.y = -bounding_box.h / 2.f;
+        AABB bbox = ph_bounding_box(&a->body);
+        float bbox_w = bbox.right - bbox.left;
+        float bbox_h = bbox.top - bbox.bottom;
+        if (bbox.right < 0)
+            a->body.position.x += LOGICAL_WIDTH + bbox_w;
+        else if (bbox.left > LOGICAL_WIDTH)
+            a->body.position.x -= LOGICAL_WIDTH + bbox_w;
+        if (bbox.top < 0)
+            a->body.position.y += LOGICAL_HEIGHT + bbox_h;
+        else if (bbox.bottom > LOGICAL_HEIGHT)
+            a->body.position.y -= LOGICAL_HEIGHT + bbox_h;
     }
 }
 
 void game_draw(Game* game, Renderer* renderer)
 {
+    Vec4 bbox_color = COLOR_WHITE;
+    bbox_color.a = 0.1f;
     // ship
     Ship* ship = &game->ship;
-    Vec2 p1 = vec2_rotated(ship->body.shapes[0].polygon.vertices[0], ship->body.angle);
-    Vec2 p2 = vec2_rotated(ship->body.shapes[0].polygon.vertices[1], ship->body.angle);
-    Vec2 p3 = vec2_rotated(ship->body.shapes[0].polygon.vertices[2], ship->body.angle);
-    p1 = vec2_add(p1, ship->body.position);
-    p2 = vec2_add(p2, ship->body.position);
-    p3 = vec2_add(p3, ship->body.position);
-    renderer_push_triangle(renderer, vertex(vec3(p1.x, p1.y, 0.f), vec2(1.f, 0.5f), ship->color),
-                           vertex(vec3(p2.x, p2.y, 0.f), vec2(0.f, 1.0f), ship->color),
-                           vertex(vec3(p3.x, p3.y, 0.f), vec2(0.f, 0.0f), ship->color));
+    renderer_transform_translate(renderer, ship->body.position);
+    renderer_transform_rotate(renderer, ship->body.angle);
+    renderer_draw_polygon(renderer, ship->body.shapes[0].polygon.vertices, ship->body.shapes[0].polygon.vertex_count,
+                          ship->color);
+    renderer_transform_reset(renderer);
 
     // asteroids
     for (int i = 0; i < game->asteroid_count; i++)
     {
         Asteroid* ast = &game->asteroids[i];
-
-        // RectF bbox = ph_bounding_box(&ast->body);
-        // renderer_draw_rect(renderer, bbox, vec4(1.f, 0, 0, 0.3f));
+        renderer_transform_translate(renderer, ast->body.position);
+        renderer_transform_rotate(renderer, ast->body.angle);
 
         for (int j = 0; j < ast->body.shape_count; j++)
         {
             Shape* shape = &ast->body.shapes[j];
-            Vertex shape_vertices[shape->polygon.vertex_count];
-            for (int k = 0; k < shape->polygon.vertex_count; k++)
-            {
-                Vec2 pos = vec2_rotated(shape->polygon.vertices[k], ast->body.angle);
-                pos = vec2_add(pos, ast->body.position);
-                shape_vertices[k] = vertex(vec3(pos.x, pos.y, 0), vec2(0, 0), ast->color);
-            }
-            renderer_push_convex_polygon(renderer, shape_vertices, shape->polygon.vertex_count);
+            renderer_draw_polygon(renderer, shape->polygon.vertices, shape->polygon.vertex_count, ast->color);
         }
 
         Vec2 vel_vec = vec2_mulf(vec2_normalized(ast->body.velocity), 20.f);
-        Vec2 p2 = vec2_add(ast->body.position, vel_vec);
+        vel_vec = vec2_rotated(vel_vec, -ast->body.angle);
 
-        renderer_draw_line(renderer, ast->body.position, p2, 2.f, COLOR_CYAN);
+        renderer_draw_line(renderer, vec2(0, 0), vel_vec, 2.f, COLOR_CYAN);
+        renderer_transform_reset(renderer);
+
+        AABB bbox = ph_bounding_box(&ast->body);
+        renderer_draw_rect(renderer, rect(bbox.left, bbox.bottom, bbox.right - bbox.left, bbox.top - bbox.bottom), bbox_color);
     }
 
-    // testing vec2 project
-    Vec2 pos = vec2(LOGICAL_WIDTH * 0.5f, LOGICAL_HEIGHT * 0.5f);
-    static float v_angle = 0.f;
-    static float onto_angle = 0.f;
-    if (input_key_pressed(SDL_SCANCODE_LEFT))
-        v_angle += 1.f/60.f;
-    if (input_key_pressed(SDL_SCANCODE_RIGHT))
-        v_angle -= 1.f/60.f;
+    // testing rect functions
+    float dt = 1.f / 60.f;
+    float speed = 50.f * dt;
+    static Vec2 pos = {{LOGICAL_WIDTH * 0.5f, LOGICAL_HEIGHT * 0.5f}};
     if (input_key_pressed(SDL_SCANCODE_UP))
-        onto_angle += 1.f/60.f;
+        pos = vec2_add(pos, vec2(0, speed));
     if (input_key_pressed(SDL_SCANCODE_DOWN))
-        onto_angle -= 1.f/60.f;
-    Vec2 v = vec2_rotated(vec2(150.f, 0.f), v_angle);
-    Vec2 onto = vec2_rotated(vec2(100.f, -40.f), onto_angle);
-    Vec2 projected = vec2_project(v, onto);
-    renderer_draw_line(renderer, pos, vec2_add(pos, onto), 4.f, COLOR_WHITE);
-    renderer_draw_line(renderer, pos, vec2_add(pos, v), 2.f, COLOR_RED);
-    renderer_draw_line(renderer, pos, vec2_add(pos, projected), 2.f, COLOR_BLUE);
+        pos = vec2_add(pos, vec2(0, -speed));
+    if (input_key_pressed(SDL_SCANCODE_LEFT))
+        pos = vec2_add(pos, vec2(-speed, 0));
+    if (input_key_pressed(SDL_SCANCODE_RIGHT))
+        pos = vec2_add(pos, vec2(speed, 0));
 
+    static float angle = 0.f;
+    speed = dt;
+    if (input_key_pressed(SDL_SCANCODE_O))
+        angle += speed;
+    if (input_key_pressed(SDL_SCANCODE_P))
+        angle -= speed;
+
+    float w = 75.f;
+    float h = 50.f;
+    Rect r = rect(pos.x, pos.y, w, h);
+    Vec2 anchor = vec2(0.f, 0.f);
+    renderer_draw_rect_ext(renderer, r, anchor, angle, COLOR_BLUE);
+
+    Vec2 center = rect_center(r, anchor, angle);
+    renderer_draw_point(renderer, center, COLOR_YELLOW);
+
+    AABB aabb = rect_aabb(r, anchor, angle);
+    Rect aabb_rect = rect(aabb.left, aabb.bottom, aabb.right - aabb.left, aabb.top - aabb.bottom);
+    Vec4 c = COLOR_YELLOW;
+    c.a = 0.1f;
+    renderer_draw_rect(renderer, aabb_rect, c);
+
+    renderer_transform_translate(renderer, center);
+    // renderer_transform_rotate(renderer, angle);
+    static float orbit_angle = 0.f;
+    orbit_angle += (PI_F * 0.5f) * dt;
+    Vec2 orbit_pos = vec2_rotated(vec2(50.f, 0), orbit_angle);
+    renderer_draw_point(renderer, orbit_pos, COLOR_RED);
+    renderer_transform_reset(renderer);
 }
 
 typedef struct

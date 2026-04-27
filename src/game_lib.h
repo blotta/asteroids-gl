@@ -22,10 +22,17 @@
 
 // Scalar
 
-void shuffle_fv(float* arr, int n);
 LIB_DEF float min_f(float a, float b);
 LIB_DEF float max_f(float a, float b);
-LIB_DEF void sort_f(float* values, size_t count);
+LIB_DEF float min_f3(float a, float b, float c);
+LIB_DEF float max_f3(float a, float b, float c);
+LIB_DEF float min_f4(float a, float b, float c, float d);
+LIB_DEF float max_f4(float a, float b, float c, float d);
+LIB_DEF float min_fv(float* v, int count);
+LIB_DEF float max_fv(float* v, int count);
+
+void shuffle_fv(float* arr, int n);
+LIB_DEF void sort_fv(float* values, size_t count);
 
 // Vectors
 
@@ -103,6 +110,7 @@ LIB_DEF float vec2_length(Vec2 a);
 LIB_DEF Vec2 vec2_add(Vec2 a, Vec2 b);
 LIB_DEF Vec2 vec2_sub(Vec2 a, Vec2 b);
 LIB_DEF Vec2 vec2_mulf(Vec2 a, float b);
+LIB_DEF float vec2_angle(Vec2 v);
 LIB_DEF float vec2_cross(Vec2 a, Vec2 b);
 LIB_DEF Vec2 vec2_normalized(Vec2 a);
 LIB_DEF Vec2 vec2_normal_ccw(Vec2 v);
@@ -116,20 +124,38 @@ LIB_DEF Vec2 vec2_project(Vec2 v, Vec2 onto);
 
 LIB_DEF Vec3 vec3(float x, float y, float z);
 LIB_DEF Vec3 vec3_v2(Vec2 a);
+LIB_DEF float vec3_dot(Vec3 a, Vec3 b);
+LIB_DEF Vec3 vec3_mulf(Vec3 a, float b);
+LIB_DEF float vec3_length_squared(Vec3 v);
+LIB_DEF float vec3_length(Vec3 v);
+LIB_DEF Vec3 vec3_normalized(Vec3 v);
 
 LIB_DEF Vec4 vec4(float x, float y, float z, float w);
+LIB_DEF Vec4 vec4_linear_combine_mat4(Vec4 left, Mat4 right);
 
 LIB_DEF Rect rect(float x, float y, float w, float h);
 
-LIB_DEF Mat4 mat4_diagonal(float diagonal);
+LIB_DEF Mat4 mat4(float diagonal);
+LIB_DEF Mat4 mat4_translation(Vec3 translation);
+LIB_DEF Mat4 mat4_rotation(float angle, Vec3 axis);
+LIB_DEF Mat4 mat4_mul_m4(Mat4 left, Mat4 right);
 
 // Produces a right-handed orthographic projection matrix with Z ranging from -1 to 1 (the GL convention).
 // Left, Right, Bottom, and Top specify the coordinates of their respective clipping planes.
 // Near and Far specify the distances to the near and far clipping planes.
 LIB_DEF Mat4 mat4_orthographic_rh_no(float left, float right, float bottom, float top, float near, float far);
 
-// General shapes
+// General geometry
 
+typedef struct {
+    float left;
+    float right;
+    float top;
+    float bottom;
+} AABB;
+
+Vec2 rect_center(Rect rect, Vec2 anchor, float angle);
+AABB rect_aabb(Rect rect, Vec2 anchor, float angle);
 float polygon_area(Vec2* vertices, int count);
 void polygon_angles(Vec2* vertices, int count, float* out_angles);
 bool polygon_is_convex(Vec2* vertices, int count);
@@ -142,9 +168,65 @@ void polygon_generate_convex(Vec2* out, int n, float max_radius);
 // --- GAME MATH IMPLEMENTATION --- //
 #ifdef GAME_LIB_IMPLEMENTATION
 
-//////////////////
-// SCALAR FUNCS //
-//////////////////
+/*
+ * Scalar
+ */
+
+float min_f(float a, float b)
+{
+    return (a < b) ? a : b;
+}
+
+float max_f(float a, float b)
+{
+    return (a < b) ? b : a;
+}
+
+float min_f3(float a, float b, float c)
+{
+    return min_f(min_f(a, b), c);
+}
+
+float min_f4(float a, float b, float c, float d)
+{
+    return min_f(min_f(a, b), min_f(c, d));
+}
+
+float max_f3(float a, float b, float c)
+{
+    return max_f(max_f(a, b), c);
+}
+
+float max_f4(float a, float b, float c, float d)
+{
+    return max_f(max_f(a, b), max_f(c, d));
+}
+
+float min_fv(float* v, int count)
+{
+    float min = v[0];
+    for (int i = 1; i < count; i++)
+    {
+        if (v[i] < min)
+        {
+            min = v[i];
+        }
+    }
+    return min;
+}
+
+float max_fv(float* v, int count)
+{
+    float max = v[0];
+    for (int i = 1; i < count; i++)
+    {
+        if (v[i] > max)
+        {
+            max = v[i];
+        }
+    }
+    return max;
+}
 
 // Fisher-Yates shuffle
 void shuffle_fv(float* arr, int n)
@@ -158,30 +240,20 @@ void shuffle_fv(float* arr, int n)
     }
 }
 
-float min_f(float a, float b)
-{
-    return (a < b) ? a : b;
-}
-
-float max_f(float a, float b)
-{
-    return (a < b) ? b : a;
-}
-
 int _fn_compare_f(const void* a, const void* b)
 {
     float fa = *(const float*)a;
     float fb = *(const float*)b;
     return (fa > fb) - (fa < fb);
 }
-void sort_f(float* values, size_t count)
+void sort_fv(float* values, size_t count)
 {
     sort_custom((void*)values, count, sizeof(float), _fn_compare_f);
 }
 
-/////////////////
-// Vec2 FUNCS //
-/////////////////
+/*
+ * Vec2
+ */
 Vec2 vec2(float x, float y)
 {
     Vec2 v;
@@ -228,6 +300,11 @@ Vec2 vec2_mulf(Vec2 a, float b)
     result.y = a.y * b;
 
     return result;
+}
+
+float vec2_angle(Vec2 v)
+{
+    return atan2_f(v.y, v.x);
 }
 
 float vec2_cross(Vec2 a, Vec2 b)
@@ -278,6 +355,10 @@ Vec2 vec2_project(Vec2 v, Vec2 onto)
     return onto;
 }
 
+/*
+ * Vec3
+ */
+
 Vec3 vec3(float x, float y, float z)
 {
     Vec3 v;
@@ -296,6 +377,41 @@ Vec3 vec3_v2(Vec2 a)
     return v;
 }
 
+float vec3_dot(Vec3 a, Vec3 b)
+{
+    return (a.x * b.x) + (a.y * b.y) + (a.z * b.z);
+}
+
+Vec3 vec3_mulf(Vec3 v, float a)
+{
+    Vec3 result;
+    result.x = v.x * a;
+    result.y = v.y * a;
+    result.z = v.z * a;
+    return result;
+}
+
+float vec3_length_squared(Vec3 a)
+{
+    return vec3_dot(a, a);
+}
+
+float vec3_length(Vec3 v)
+{
+    return sqrt_f(vec3_length_squared(v));
+}
+
+Vec3 vec3_normalized(Vec3 v)
+{
+    float len = vec3_length(v);
+    ASSERT(len != 0.0f);
+    return vec3_mulf(v, 1.0f / len);
+}
+
+/*
+ * Vec4
+ */
+
 Vec4 vec4(float x, float y, float z, float w)
 {
     Vec4 v;
@@ -306,17 +422,38 @@ Vec4 vec4(float x, float y, float z, float w)
     return v;
 }
 
-Rect rect(float x, float y, float w, float h)
+Vec4 vec4_linear_combine_mat4(Vec4 left, Mat4 right)
 {
-    Rect r;
-    r.x = x;
-    r.y = y;
-    r.w = w;
-    r.h = h;
-    return r;
+    Vec4 result;
+
+    result.x = left.elements[0] * right.columns[0].x;
+    result.y = left.elements[0] * right.columns[0].y;
+    result.z = left.elements[0] * right.columns[0].z;
+    result.w = left.elements[0] * right.columns[0].w;
+
+    result.x += left.elements[1] * right.columns[1].x;
+    result.y += left.elements[1] * right.columns[1].y;
+    result.z += left.elements[1] * right.columns[1].z;
+    result.w += left.elements[1] * right.columns[1].w;
+
+    result.x += left.elements[2] * right.columns[2].x;
+    result.y += left.elements[2] * right.columns[2].y;
+    result.z += left.elements[2] * right.columns[2].z;
+    result.w += left.elements[2] * right.columns[2].w;
+
+    result.x += left.elements[3] * right.columns[3].x;
+    result.y += left.elements[3] * right.columns[3].y;
+    result.z += left.elements[3] * right.columns[3].z;
+    result.w += left.elements[3] * right.columns[3].w;
+
+    return result;
 }
 
-Mat4 mat4_diagonal(float diagonal)
+/*
+ * Mat4
+ */
+
+Mat4 mat4(float diagonal)
 {
     Mat4 result = {0};
     result.elements[0][0] = diagonal;
@@ -325,6 +462,57 @@ Mat4 mat4_diagonal(float diagonal)
     result.elements[3][3] = diagonal;
 
     return result;
+}
+
+Mat4 mat4_translation(Vec3 translation)
+{
+    Mat4 result = mat4(1.0f);
+    result.elements[3][0] = translation.x;
+    result.elements[3][1] = translation.y;
+    result.elements[3][2] = translation.z;
+
+    return result;
+}
+
+Mat4 mat4_rotation(float angle, Vec3 axis)
+{
+    Mat4 result = mat4(1.0f);
+
+    axis = vec3_normalized(axis);
+
+    float sintheta = sin_f(angle);
+    float costheta = cos_f(angle);
+    float cosvalue = 1.0f - costheta;
+
+    result.elements[0][0] = (axis.x * axis.x * cosvalue) + costheta;
+    result.elements[0][1] = (axis.x * axis.y * cosvalue) + (axis.z * sintheta);
+    result.elements[0][2] = (axis.x * axis.z * cosvalue) - (axis.y * sintheta);
+
+    result.elements[1][0] = (axis.y * axis.x * cosvalue) - (axis.z * sintheta);
+    result.elements[1][1] = (axis.y * axis.y * cosvalue) + costheta;
+    result.elements[1][2] = (axis.y * axis.z * cosvalue) + (axis.x * sintheta);
+
+    result.elements[2][0] = (axis.z * axis.x * cosvalue) + (axis.y * sintheta);
+    result.elements[2][1] = (axis.z * axis.y * cosvalue) - (axis.x * sintheta);
+    result.elements[2][2] = (axis.z * axis.z * cosvalue) + costheta;
+
+    return result;
+}
+
+Mat4 mat4_mul_m4(Mat4 left, Mat4 right)
+{
+    Mat4 result;
+    result.columns[0] = vec4_linear_combine_mat4(right.columns[0], left);
+    result.columns[1] = vec4_linear_combine_mat4(right.columns[1], left);
+    result.columns[2] = vec4_linear_combine_mat4(right.columns[2], left);
+    result.columns[3] = vec4_linear_combine_mat4(right.columns[3], left);
+
+    return result;
+}
+
+Vec4 mat4_mul_v4(Mat4 matrix, Vec4 vector)
+{
+    return vec4_linear_combine_mat4(vector, matrix);
 }
 
 Mat4 mat4_orthographic_rh_no(float left, float right, float bottom, float top, float near, float far)
@@ -343,9 +531,52 @@ Mat4 mat4_orthographic_rh_no(float left, float right, float bottom, float top, f
     return result;
 }
 
-/////////////////////////////
-// General shape functions //
-/////////////////////////////
+
+/*
+ * General geometry
+ */
+
+Rect rect(float x, float y, float w, float h)
+{
+    Rect r;
+    r.x = x;
+    r.y = y;
+    r.w = w;
+    r.h = h;
+    return r;
+}
+
+Vec2 rect_center(Rect rect, Vec2 anchor, float angle)
+{
+    Vec2 center = vec2(rect.w * 0.5f, rect.h * 0.5f);
+    Vec2 pivot = vec2(anchor.x * rect.w, anchor.y * rect.h);
+    Vec2 p = vec2_sub(center, pivot);
+    p = vec2_rotated(p, angle);
+    p = vec2_add(p, vec2(rect.x, rect.y));
+    return p;
+}
+
+AABB rect_aabb(Rect rect, Vec2 anchor, float angle)
+{
+    float cos_a = cos_f(angle);
+    float sin_a = sin_f(angle);
+
+    float hw = rect.w * 0.5f;
+    float hh = rect.h * 0.5f;
+
+    float ex = abs_f(hw * cos_a) + abs_f(hh * sin_a);
+    float ey = abs_f(hw * sin_a) + abs_f(hh * cos_a);
+
+    Vec2 center = rect_center(rect, anchor, angle);
+
+    AABB result = {0};
+    result.left = center.x - ex;
+    result.right = center.x + ex;
+    result.top = center.y + ey;
+    result.bottom = center.y - ey;
+
+    return result;
+}
 
 float polygon_area(Vec2* vertices, int count)
 {
@@ -433,8 +664,8 @@ void polygon_generate_convex(Vec2* out, int n, float max_radius)
     }
 
     // 2. Sort them
-    sort_f(xPool, n);
-    sort_f(yPool, n);
+    sort_fv(xPool, n);
+    sort_fv(yPool, n);
 
     // 3. Isolate the extreme points
     float minX = xPool[0];
@@ -517,8 +748,8 @@ void polygon_generate_convex(Vec2* out, int n, float max_radius)
         x += vec[i].x;
         y += vec[i].y;
 
-        minPolygonX = fminf(minPolygonX, x);
-        minPolygonY = fminf(minPolygonY, y);
+        minPolygonX = min_f(minPolygonX, x);
+        minPolygonY = min_f(minPolygonY, y);
     }
 
     // 10. Move the polygon to the original min and max coordinates
@@ -658,7 +889,7 @@ typedef struct
 
 void ph_body_init(PHBody* body, Shape* shapes, int shape_count);
 void ph_body_add_shape(PHBody* body, Shape* shape);
-Rect ph_bounding_box(PHBody* b);
+AABB ph_bounding_box(PHBody* b);
 
 // PHYSICS IMPLEMENTATION
 #ifdef GAME_LIB_IMPLEMENTATION
@@ -686,30 +917,34 @@ void ph_body_add_shape(PHBody* body, Shape* shape)
     body->shapes[body->shape_count++] = *shape;
 }
 
-Rect ph_bounding_box(PHBody* b)
+AABB ph_bounding_box(PHBody* b)
 {
     ASSERT(b->shape_count > 0);
 
-    float minx = INFINITY, miny = INFINITY, maxx = -INFINITY, maxy = -INFINITY;
+    AABB bbox;
+    bbox.left = INFINITY;
+    bbox.right = -INFINITY;
+    bbox.top = -INFINITY;
+    bbox.bottom = INFINITY;
 
     for (int i = 0; i < b->shape_count; i++)
     {
         Shape* shape = &b->shapes[i];
-        Vec2 bottomleft = vec2(INFINITY, INFINITY);
-        Vec2 topright = vec2(-INFINITY, -INFINITY);
 
         switch (shape->kind)
         {
         case SHAPEKIND_RECTANGLE: {
-            bottomleft = vec2(b->position.x - shape->rect.size.x / 2.f, b->position.y - shape->rect.size.y / 2.f);
-            bottomleft = vec2_rotated(bottomleft, b->angle);
-            topright = vec2(b->position.x + shape->rect.size.x / 2.f, b->position.y + shape->rect.size.y / 2.f);
-            topright = vec2_rotated(topright, b->angle);
+            float hw = shape->rect.size.x * 0.5f;
+            float hh = shape->rect.size.y * 0.5f;
+            Rect rc = rect(b->position.x - hw, b->position.y - hh, shape->rect.size.x, shape->rect.size.y);
+            bbox = rect_aabb(rc, vec2(0.5f, 0.5f), b->angle);
         }
         break;
         case SHAPEKIND_CIRCLE: {
-            bottomleft = vec2(b->position.x - shape->circle.radius, b->position.y - shape->circle.radius);
-            topright = vec2(b->position.x + shape->circle.radius, b->position.y + shape->circle.radius);
+            bbox.left = b->position.x - shape->circle.radius;
+            bbox.right = b->position.x + shape->circle.radius;
+            bbox.top = b->position.y + shape->circle.radius;
+            bbox.bottom = b->position.y - shape->circle.radius;
         }
         break;
         case SHAPEKIND_POLYGON: {
@@ -718,28 +953,17 @@ Rect ph_bounding_box(PHBody* b)
                 Vec2 v = shape->polygon.vertices[j];
                 v = vec2_rotated(v, b->angle);
                 v = vec2_add(v, b->position);
-                bottomleft = vec2(min_f(bottomleft.x, v.x), min_f(bottomleft.y, v.y));
-                topright = vec2(max_f(topright.x, v.x), max_f(topright.y, v.y));
+                bbox.left = min_f(bbox.left, v.x);
+                bbox.right = max_f(bbox.right, v.x);
+                bbox.bottom = min_f(bbox.bottom, v.y);
+                bbox.top = max_f(bbox.top, v.y);
             }
         }
         break;
         }
-
-        float shape_minx = min_f(bottomleft.x, topright.x);
-        float shape_miny = min_f(bottomleft.y, topright.y);
-        float shape_maxx = max_f(bottomleft.x, topright.x);
-        float shape_maxy = max_f(bottomleft.y, topright.y);
-
-        minx = min_f(minx, shape_minx);
-        miny = min_f(miny, shape_miny);
-        maxx = max_f(maxx, shape_maxx);
-        maxy = max_f(maxy, shape_maxy);
     }
 
-    ASSERT(minx != INFINITY && miny != INFINITY && maxx != -INFINITY && maxy != -INFINITY);
-    ASSERT(minx < maxx && miny < maxy);
-
-    return rect(minx, miny, maxx - minx, maxy - miny);
+    return bbox;
 }
 
 #endif // PHYSICS IMPLEMENTATION
