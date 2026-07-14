@@ -435,6 +435,10 @@ bool input_key_just_released(SDL_Scancode scancode)
 #define MAX_ASTEROID_RADIUS 80.f
 #define MAX_ASTEROID_SPEED 100.f
 
+#define SHIP_MASS 20.f
+#define ASTEROID_DENSITY 0.1f   // asteroid mass = ASTEROID_DENSITY * base_radius^2
+#define BOUNCE_RESTITUTION 0.4f // soft / dampened arcade bounce
+
 typedef struct
 {
     PHBody body;
@@ -584,14 +588,15 @@ void game_update(Game* game, float dt)
         else if (bbox.bottom > LOGICAL_HEIGHT)
             a->body.position.y -= LOGICAL_HEIGHT + bbox_h;
 
-        // collision test against the ship (verification hook)
-        Vec2 push_normal;
-        float push_depth;
-        if (ph_body_collides(&ship->body, &a->body, &push_normal, &push_depth))
+        // bounce the ship off the asteroid (both bodies react; mass scales with size)
+        Vec2 hit_normal;
+        float hit_depth;
+        if (ph_body_collides(&ship->body, &a->body, &hit_normal, &hit_depth))
         {
-            a->color = COLOR_RED;
-            // push_normal points ship -> asteroid; move the ship out along -normal
-            ship->body.position = vec2_sub(ship->body.position, vec2_mulf(push_normal, push_depth));
+            float inv_ship = 1.f / SHIP_MASS;
+            float inv_ast = 1.f / (ASTEROID_DENSITY * a->base_radius * a->base_radius);
+            ph_resolve_collision(&ship->body, &a->body, hit_normal, hit_depth, inv_ship, inv_ast, BOUNCE_RESTITUTION);
+            a->color = COLOR_RED; // on-contact visual feedback
         }
         else
         {

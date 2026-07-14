@@ -121,6 +121,8 @@ LIB_DEF Vec2 vec2_normal_cw(Vec2 v);
 LIB_DEF Vec2 vec2_normal_cw_n(Vec2 v);
 LIB_DEF Vec2 vec2_rotated(Vec2 v, float angle);
 LIB_DEF Vec2 vec2_project(Vec2 v, Vec2 onto);
+// reflects v about a plane with unit normal n: v - 2*(v.n)*n
+LIB_DEF Vec2 vec2_reflect(Vec2 v, Vec2 n);
 
 LIB_DEF Vec3 vec3(float x, float y, float z);
 LIB_DEF Vec3 vec3_v2(Vec2 a);
@@ -354,6 +356,12 @@ Vec2 vec2_project(Vec2 v, Vec2 onto)
     float scalar_projection = vec2_dot(v, onto);
     onto = vec2_mulf(onto, scalar_projection);
     return onto;
+}
+
+Vec2 vec2_reflect(Vec2 v, Vec2 n)
+{
+    // n must be unit length
+    return vec2_sub(v, vec2_mulf(n, 2.f * vec2_dot(v, n)));
 }
 
 /*
@@ -914,6 +922,13 @@ AABB ph_bounding_box(PHBody* b);
 // be NULL when only a boolean result is needed.
 bool ph_body_collides(PHBody* a, PHBody* b, Vec2* out_normal, float* out_depth);
 
+// Resolves a collision between two bodies along a unit normal (pointing from a toward b, as
+// produced by ph_body_collides). Separates them by depth (split by inverse mass) and applies
+// a restitution impulse that updates both velocities. inv_mass_* is 1/mass; pass 0 for an
+// immovable body. restitution is in [0, 1] (0 = no bounce, 1 = perfectly elastic).
+void ph_resolve_collision(PHBody* a, PHBody* b, Vec2 normal, float depth, float inv_mass_a, float inv_mass_b,
+                          float restitution);
+
 // PHYSICS IMPLEMENTATION
 #ifdef GAME_LIB_IMPLEMENTATION
 
@@ -1280,6 +1295,35 @@ bool ph_body_collides(PHBody* a, PHBody* b, Vec2* out_normal, float* out_depth)
             *out_depth = best_depth;
     }
     return hit;
+}
+
+void ph_resolve_collision(PHBody* a, PHBody* b, Vec2 normal, float depth, float inv_mass_a, float inv_mass_b,
+                          float restitution)
+{
+    float inv_sum = inv_mass_a + inv_mass_b;
+    if (inv_sum <= 0.f)
+    {
+        return; // both bodies immovable
+    }
+
+    // positional correction: push the bodies apart by `depth` along the normal, split by
+    // inverse mass so the lighter body moves more
+    Vec2 correction = vec2_mulf(normal, depth / inv_sum);
+    a->position = vec2_sub(a->position, vec2_mulf(correction, inv_mass_a));
+    b->position = vec2_add(b->position, vec2_mulf(correction, inv_mass_b));
+
+    // impulse: only apply when the bodies are approaching along the normal
+    Vec2 relative_velocity = vec2_sub(b->velocity, a->velocity);
+    float vn = vec2_dot(relative_velocity, normal);
+    if (vn > 0.f)
+    {
+        return; // already separating
+    }
+
+    float j = -(1.f + restitution) * vn / inv_sum;
+    Vec2 impulse = vec2_mulf(normal, j);
+    a->velocity = vec2_sub(a->velocity, vec2_mulf(impulse, inv_mass_a));
+    b->velocity = vec2_add(b->velocity, vec2_mulf(impulse, inv_mass_b));
 }
 
 #endif // PHYSICS IMPLEMENTATION
