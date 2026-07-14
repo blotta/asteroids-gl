@@ -156,6 +156,7 @@ typedef struct {
 
 Vec2 rect_center(Rect rect, Vec2 anchor, float angle);
 AABB rect_aabb(Rect rect, Vec2 anchor, float angle);
+bool aabb_intersect(AABB a, AABB b);
 float polygon_area(Vec2* vertices, int count);
 void polygon_angles(Vec2* vertices, int count, float* out_angles);
 bool polygon_is_convex(Vec2* vertices, int count);
@@ -578,6 +579,22 @@ AABB rect_aabb(Rect rect, Vec2 anchor, float angle)
     return result;
 }
 
+bool aabb_intersect(AABB a, AABB b)
+{
+    return a.right > b.left &&
+           a.left < b.right &&
+           a.top > b.bottom &&
+           a.bottom < b.top;
+}
+
+bool rect_intersect_rect(Rect r1, Rect r2)
+{
+    AABB aabb1 = rect_aabb(r1, vec2(0.0f, 0.0f), 0.0f);
+    AABB aabb2 = rect_aabb(r2, vec2(0.0f, 0.0f), 0.0f);
+
+    return aabb_intersect(aabb1, aabb2);
+}
+
 float polygon_area(Vec2* vertices, int count)
 {
     float area = 0.0f;
@@ -891,6 +908,12 @@ void ph_body_init(PHBody* body, Shape* shapes, int shape_count);
 void ph_body_add_shape(PHBody* body, Shape* shape);
 AABB ph_bounding_box(PHBody* b);
 
+// Returns true if the two bodies overlap. When out_normal / out_depth are non-NULL they
+// receive the minimum translation vector: out_normal is a unit vector pointing from a
+// toward b, and moving b by (out_normal * out_depth) separates them. Either out param may
+// be NULL when only a boolean result is needed.
+bool ph_body_collides(PHBody* a, PHBody* b, Vec2* out_normal, float* out_depth);
+
 // PHYSICS IMPLEMENTATION
 #ifdef GAME_LIB_IMPLEMENTATION
 
@@ -964,6 +987,299 @@ AABB ph_bounding_box(PHBody* b)
     }
 
     return bbox;
+}
+
+// Fills out[] with a shape's world-space vertices and returns the count. Circles have no
+// vertices and return 0. Rectangles are emitted as a 4-vertex polygon.
+static int _shape_world_vertices(const Shape* s, Vec2 pos, float angle, Vec2 out[SHAPE_POLYGON_MAX_VERTICES])
+{
+    switch (s->kind)
+    {
+    case SHAPEKIND_POLYGON: {
+        int n = s->polygon.vertex_count;
+        for (int i = 0; i < n; i++)
+        {
+            out[i] = vec2_add(vec2_rotated(s->polygon.vertices[i], angle), pos);
+        }
+        return n;
+    }
+    case SHAPEKIND_RECTANGLE: {
+        float hw = s->rect.size.x * 0.5f;
+        float hh = s->rect.size.y * 0.5f;
+        Vec2 corners[4] = {vec2(-hw, -hh), vec2(hw, -hh), vec2(hw, hh), vec2(-hw, hh)};
+        for (int i = 0; i < 4; i++)
+        {
+            out[i] = vec2_add(vec2_rotated(corners[i], angle), pos);
+        }
+        return 4;
+    }
+    case SHAPEKIND_CIRCLE:
+    default:
+        return 0;
+    }
+}
+
+// Projects a polygon onto axis, producing the [min, max] interval.
+static void _project_polygon(const Vec2* v, int n, Vec2 axis, float* out_min, float* out_max)
+{
+    float mn = vec2_dot(v[0], axis);
+    float mx = mn;
+    for (int i = 1; i < n; i++)
+    {
+        float p = vec2_dot(v[i], axis);
+        mn = min_f(mn, p);
+        mx = max_f(mx, p);
+    }
+    *out_min = mn;
+    *out_max = mx;
+}
+
+// Tests one (unit) candidate separating axis. Returns false if the intervals are disjoint
+// (bodies separated). Otherwise records the axis in best_axis/best_depth when its overlap
+// is the smallest seen so far (the running minimum translation vector).
+static bool _sat_axis_overlap(Vec2 axis, float min_a, float max_a, float min_b, float max_b,
+                              float* best_depth, Vec2* best_axis)
+{
+    float overlap = min_f(max_a, max_b) - max_f(min_a, min_b);
+    if (overlap <= 0.f)
+    {
+        return false;
+    }
+    if (overlap < *best_depth)
+    {
+        *best_depth = overlap;
+        *best_axis = axis;
+    }
+    return true;
+}
+
+static Vec2 _polygon_centroid(const Vec2* v, int n)
+{
+    Vec2 c = vec2(0.f, 0.f);
+    for (int i = 0; i < n; i++)
+    {
+        c = vec2_add(c, v[i]);
+    }
+    return vec2_mulf(c, 1.f / (float)n);
+}
+
+// SAT for two convex polygons. out_normal (unit) points from a toward b.
+static bool _sat_poly_poly(const Vec2* a, int na, const Vec2* b, int nb, Vec2* out_normal, float* out_depth)
+{
+    float best_depth = INFINITY;
+    Vec2 best_axis = vec2(0.f, 0.f);
+
+    // edge normals of both polygons are the candidate separating axes
+    for (int poly = 0; poly < 2; poly++)
+    {
+        const Vec2* v = (poly == 0) ? a : b;
+        int n = (poly == 0) ? na : nb;
+        for (int i = 0; i < n; i++)
+        {
+            Vec2 edge = vec2_sub(v[(i + 1) % n], v[i]);
+            if (edge.x == 0.f && edge.y == 0.f)
+            {
+                continue; // skip degenerate edge
+            }
+            Vec2 axis = vec2_normal_ccw_n(edge);
+
+            float min_a, max_a, min_b, max_b;
+            _project_polygon(a, na, axis, &min_a, &max_a);
+            _project_polygon(b, nb, axis, &min_b, &max_b);
+
+            if (!_sat_axis_overlap(axis, min_a, max_a, min_b, max_b, &best_depth, &best_axis))
+            {
+                return false;
+            }
+        }
+    }
+
+    // orient the normal from a toward b
+    Vec2 dir = vec2_sub(_polygon_centroid(b, nb), _polygon_centroid(a, na));
+    if (vec2_dot(dir, best_axis) < 0.f)
+    {
+        best_axis = vec2_mulf(best_axis, -1.f);
+    }
+
+    if (out_normal)
+        *out_normal = best_axis;
+    if (out_depth)
+        *out_depth = best_depth;
+    return true;
+}
+
+// SAT for a circle vs a convex polygon. out_normal (unit) points from the polygon toward
+// the circle center.
+static bool _sat_circle_poly(Vec2 center, float radius, const Vec2* poly, int n, Vec2* out_normal, float* out_depth)
+{
+    float best_depth = INFINITY;
+    Vec2 best_axis = vec2(0.f, 0.f);
+
+    // polygon edge normals
+    for (int i = 0; i < n; i++)
+    {
+        Vec2 edge = vec2_sub(poly[(i + 1) % n], poly[i]);
+        if (edge.x == 0.f && edge.y == 0.f)
+        {
+            continue;
+        }
+        Vec2 axis = vec2_normal_ccw_n(edge);
+
+        float min_p, max_p;
+        _project_polygon(poly, n, axis, &min_p, &max_p);
+        float c = vec2_dot(center, axis);
+        if (!_sat_axis_overlap(axis, min_p, max_p, c - radius, c + radius, &best_depth, &best_axis))
+        {
+            return false;
+        }
+    }
+
+    // axis from the closest polygon vertex to the circle center
+    int closest = 0;
+    float closest_d2 = vec2_length_squared(vec2_sub(poly[0], center));
+    for (int i = 1; i < n; i++)
+    {
+        float d2 = vec2_length_squared(vec2_sub(poly[i], center));
+        if (d2 < closest_d2)
+        {
+            closest_d2 = d2;
+            closest = i;
+        }
+    }
+    Vec2 to_center = vec2_sub(center, poly[closest]);
+    if (!(to_center.x == 0.f && to_center.y == 0.f))
+    {
+        Vec2 axis = vec2_normalized(to_center);
+        float min_p, max_p;
+        _project_polygon(poly, n, axis, &min_p, &max_p);
+        float c = vec2_dot(center, axis);
+        if (!_sat_axis_overlap(axis, min_p, max_p, c - radius, c + radius, &best_depth, &best_axis))
+        {
+            return false;
+        }
+    }
+
+    // orient the normal from the polygon toward the circle center
+    Vec2 dir = vec2_sub(center, _polygon_centroid(poly, n));
+    if (vec2_dot(dir, best_axis) < 0.f)
+    {
+        best_axis = vec2_mulf(best_axis, -1.f);
+    }
+
+    if (out_normal)
+        *out_normal = best_axis;
+    if (out_depth)
+        *out_depth = best_depth;
+    return true;
+}
+
+// out_normal (unit) points from a toward b.
+static bool _circle_circle(Vec2 ca, float ra, Vec2 cb, float rb, Vec2* out_normal, float* out_depth)
+{
+    Vec2 d = vec2_sub(cb, ca);
+    float r = ra + rb;
+    float dist2 = vec2_length_squared(d);
+    if (dist2 >= r * r)
+    {
+        return false;
+    }
+    float dist = sqrt_f(dist2);
+    Vec2 normal = (dist > 0.0001f) ? vec2_mulf(d, 1.f / dist) : vec2(1.f, 0.f); // arbitrary axis if coincident
+    if (out_normal)
+        *out_normal = normal;
+    if (out_depth)
+        *out_depth = r - dist;
+    return true;
+}
+
+// Dispatches on the pair of shape kinds. Rectangles are treated as polygons. out_normal
+// (unit) points from shape a toward shape b.
+static bool _shape_collides(const Shape* sa, Vec2 pa, float aa, const Shape* sb, Vec2 pb, float ab, Vec2* out_normal,
+                            float* out_depth)
+{
+    bool a_circle = (sa->kind == SHAPEKIND_CIRCLE);
+    bool b_circle = (sb->kind == SHAPEKIND_CIRCLE);
+
+    if (a_circle && b_circle)
+    {
+        return _circle_circle(pa, sa->circle.radius, pb, sb->circle.radius, out_normal, out_depth);
+    }
+
+    if (!a_circle && !b_circle)
+    {
+        Vec2 va[SHAPE_POLYGON_MAX_VERTICES];
+        Vec2 vb[SHAPE_POLYGON_MAX_VERTICES];
+        int na = _shape_world_vertices(sa, pa, aa, va);
+        int nb = _shape_world_vertices(sb, pb, ab, vb);
+        return _sat_poly_poly(va, na, vb, nb, out_normal, out_depth);
+    }
+
+    // exactly one circle, one polygon/rectangle
+    if (a_circle)
+    {
+        Vec2 vb[SHAPE_POLYGON_MAX_VERTICES];
+        int nb = _shape_world_vertices(sb, pb, ab, vb);
+        Vec2 n;
+        float d;
+        if (!_sat_circle_poly(pa, sa->circle.radius, vb, nb, &n, &d))
+        {
+            return false;
+        }
+        // n points polygon(b) -> circle(a), i.e. b -> a; flip to get a -> b
+        if (out_normal)
+            *out_normal = vec2_mulf(n, -1.f);
+        if (out_depth)
+            *out_depth = d;
+        return true;
+    }
+    else
+    {
+        Vec2 va[SHAPE_POLYGON_MAX_VERTICES];
+        int na = _shape_world_vertices(sa, pa, aa, va);
+        // n points polygon(a) -> circle(b), i.e. a -> b already
+        return _sat_circle_poly(pb, sb->circle.radius, va, na, out_normal, out_depth);
+    }
+}
+
+bool ph_body_collides(PHBody* a, PHBody* b, Vec2* out_normal, float* out_depth)
+{
+    // broad phase: reject disjoint bounding boxes cheaply
+    if (!aabb_intersect(ph_bounding_box(a), ph_bounding_box(b)))
+    {
+        return false;
+    }
+
+    // narrow phase: test every shape pair, keep the deepest penetration as the MTV
+    bool hit = false;
+    float best_depth = -INFINITY;
+    Vec2 best_normal = vec2(0.f, 0.f);
+
+    for (int i = 0; i < a->shape_count; i++)
+    {
+        for (int j = 0; j < b->shape_count; j++)
+        {
+            Vec2 n;
+            float d;
+            if (_shape_collides(&a->shapes[i], a->position, a->angle, &b->shapes[j], b->position, b->angle, &n, &d))
+            {
+                hit = true;
+                if (d > best_depth)
+                {
+                    best_depth = d;
+                    best_normal = n;
+                }
+            }
+        }
+    }
+
+    if (hit)
+    {
+        if (out_normal)
+            *out_normal = best_normal;
+        if (out_depth)
+            *out_depth = best_depth;
+    }
+    return hit;
 }
 
 #endif // PHYSICS IMPLEMENTATION

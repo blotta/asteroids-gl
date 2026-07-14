@@ -534,14 +534,14 @@ void game_update(Game* game, float dt)
 
     if (input_thrust)
     {
-        float thrust = 1000.f;
+        float thrust = 5000.f;
         ship->acc.x += SDL_cosf(ship->body.angle) * thrust * dt;
         ship->acc.y += SDL_sinf(ship->body.angle) * thrust * dt;
     }
 
     ship->body.velocity.x += ship->acc.x * dt;
     ship->body.velocity.y += ship->acc.y * dt;
-    ship->body.velocity = vec2_mulf(ship->body.velocity, 0.99f); // linear damping
+    ship->body.velocity = vec2_mulf(ship->body.velocity, 0.999f); // linear damping
     ship->acc = vec2_mulf(ship->acc, 0.9f);
     ship->body.position.x += ship->body.velocity.x * dt;
     ship->body.position.y += ship->body.velocity.y * dt;
@@ -583,6 +583,20 @@ void game_update(Game* game, float dt)
             a->body.position.y += LOGICAL_HEIGHT + bbox_h;
         else if (bbox.bottom > LOGICAL_HEIGHT)
             a->body.position.y -= LOGICAL_HEIGHT + bbox_h;
+
+        // collision test against the ship (verification hook)
+        Vec2 push_normal;
+        float push_depth;
+        if (ph_body_collides(&ship->body, &a->body, &push_normal, &push_depth))
+        {
+            a->color = COLOR_RED;
+            // push_normal points ship -> asteroid; move the ship out along -normal
+            ship->body.position = vec2_sub(ship->body.position, vec2_mulf(push_normal, push_depth));
+        }
+        else
+        {
+            a->color = COLOR_WHITE;
+        }
     }
 }
 
